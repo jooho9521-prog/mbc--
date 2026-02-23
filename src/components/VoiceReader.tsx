@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Play, Square, Download, Wand2, Volume2, Check, User, Activity } from 'lucide-react';
-import { generateTTS } from './services/geminiService';
+// [수정됨] 상위 폴더로 빠져나가는 경로(../)로 변경
+import { generateTTS } from '../services/geminiService'; 
 
 interface Props {
   text: string;
