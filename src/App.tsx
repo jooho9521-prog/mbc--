@@ -183,10 +183,18 @@ const App: React.FC = () => {
     performSearch(state.keyword, selectedMode.prompt);
   }, [state.keyword, selectedMode, selectedPersona]);
 
-  // [추가] G메일 요약 버튼 클릭 시 실행될 함수
+  // [수정됨] G메일 요약 버튼 클릭 시 실행될 함수 (강제 초기화 로직 추가)
   const handleGmailSummary = async () => {
-    if (!isGoogleAuthReady) {
-      showToast("G메일 연동을 준비 중입니다. 잠시 후 다시 시도해주세요.");
+    let currentAuthStatus = isGoogleAuthReady;
+
+    if (!currentAuthStatus) {
+      showToast("구글 연동을 준비하는 중입니다...");
+      currentAuthStatus = await initGoogleAuth() as boolean;
+      setIsGoogleAuthReady(currentAuthStatus);
+    }
+
+    if (!currentAuthStatus) {
+      showToast("구글 스크립트 연결 실패! 브라우저의 팝업/광고 차단을 잠시 꺼주세요.");
       return;
     }
 
@@ -520,10 +528,10 @@ const App: React.FC = () => {
                 </button>
               ))}
               
-              {/* [추가] G메일 요약 버튼 */}
+              {/* [수정됨] G메일 요약 버튼 (족쇄 해제) */}
               <button
                 onClick={handleGmailSummary}
-                disabled={state.isLoading || !isGoogleAuthReady}
+                disabled={state.isLoading}
                 className={`ml-auto px-5 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm flex items-center gap-2 ${
                   isDarkMode 
                     ? 'bg-red-900/30 border-red-800 text-red-300 hover:bg-red-900/50' 
