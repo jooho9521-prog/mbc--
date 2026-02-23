@@ -1,6 +1,13 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis } from "../types";
 
+// ⭐️ [수정됨] Vercel(브라우저) 환경에서 API 키를 안전하게 가져오는 헬퍼 함수
+const getApiKey = () => {
+  // 사용자가 UI에서 입력한 키를 우선적으로 가져옵니다.
+  const key = localStorage.getItem('gemini_api_key') || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  return key;
+};
+
 // [완벽 방어] AI가 JSON 규칙을 어겨도 무조건 데이터를 뜯어내는 만능 파서
 const cleanAndParseJson = (text: string) => {
   if (!text) return null;
@@ -49,8 +56,8 @@ export const handleApiError = (error: any): string => {
   if (lowerMsg.includes("not found") || lowerMsg.includes("404")) {
     return "AI Model connection failed (404). Switching to supported model.";
   }
-  if (lowerMsg.includes("429") || lowerMsg.includes("quota")) {
-    return "Rate limit exceeded (429). Please wait a minute.";
+  if (lowerMsg.includes("429") || lowerMsg.includes("quota") || lowerMsg.includes("api key")) {
+    return "API 키가 올바르지 않거나 한도 초과입니다. 우측 상단의 [API 키 관리]에서 키를 다시 입력해주세요.";
   }
   if (lowerMsg.includes("503") || lowerMsg.includes("overloaded")) {
     return "Server overloaded (503). Please try again soon.";
@@ -85,9 +92,9 @@ export class GeminiTrendService {
   async fetchTrendsAndAnalysis(keyword: string, modeInstruction: string): Promise<{ news: NewsItem[]; analysis: TrendAnalysis }> {
     try {
       return await withRetry(async () => {
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        // ⭐️ [수정됨] Vercel 환경을 위해 getApiKey() 사용
+        const ai = new GoogleGenAI({ apiKey: getApiKey() });
         
-        // ⭐️ [수정됨] 프롬프트에 한국어 출력(KOREAN) 강제 명령 추가
         const prompt = `
           Analyze the trend for "${keyword}". Context: ${modeInstruction}
           
@@ -167,7 +174,7 @@ export class GeminiTrendService {
           { title: `💬 '${keyword}' X(트위터) 실시간 반응 보기`, uri: `https://twitter.com/search?q=${encodeURIComponent(keyword)}&f=live`, source: "X (Twitter)" },
           { title: `▶️ '${keyword}' 유튜브 관련 영상 찾아보기`, uri: `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}`, source: "YouTube" }
         ],
-        analysis: { summary: "1. 일시적인 트래픽 과부하로 분석 데이터를 불러오지 못했습니다.\n\n2. 우측 소스 피드 링크를 클릭하여 관련 최신 뉴스를 확인해 주세요.", sentiment: "neutral", keyPoints: [], growthScore: 0 }
+        analysis: { summary: "1. API 키 오류 또는 일시적인 트래픽 과부하입니다.\n\n2. 우측 상단의 [API 키 관리] 버튼을 눌러 키가 정확한지 확인해 주세요.", sentiment: "neutral", keyPoints: [], growthScore: 0 }
       };
     }
   }
@@ -175,7 +182,8 @@ export class GeminiTrendService {
 
 export const generateExpandedContent = async (summary: string, type: string, stylePrompt?: string) => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    // ⭐️ [수정됨] getApiKey() 사용
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const prompt = `Create high-quality ${type} content based on this summary: ${summary}. ${stylePrompt ? `Apply style: ${stylePrompt}` : ''} Output only the generated text or JSON as appropriate.`;
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -191,7 +199,8 @@ export const generateExpandedContent = async (summary: string, type: string, sty
 
 export const generateTTS = async (text: string, voiceName: string = 'Zephyr', styleInstruction?: string) => {
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    // ⭐️ [수정됨] getApiKey() 사용
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const prompt = styleInstruction ? `Say this ${styleInstruction}: ${text}` : text;
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
@@ -217,9 +226,9 @@ export const generateVideoWithVeo = async () => null;
 export const generateMindMapData = async (keyword: string) => {
   try {
     return await withRetry(async () => {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      // ⭐️ [수정됨] getApiKey() 사용
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
       
-      // ⭐️ [수정됨] 마인드맵에도 한국어 강제 규칙 추가
       const prompt = `
         Create a knowledge mind map for "${keyword}". 
         Include a root node named "${keyword}" and 4 detailed sub-branches.
