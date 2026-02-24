@@ -120,6 +120,10 @@ const App: React.FC = () => {
       win.process = win.process || { env: {} };
       win.process.env = win.process.env || {};
       win.process.env.API_KEY = savedKey;
+      
+      // ⭐️ [마법 1] 카드뉴스 AI가 API 키를 무조건 찾도록 환경변수 강제 주입
+      win.process.env.GEMINI_API_KEY = savedKey;
+      win.process.env.VITE_GEMINI_API_KEY = savedKey;
     }
   }, []);
 
@@ -142,6 +146,10 @@ const App: React.FC = () => {
       win.process = win.process || { env: {} };
       win.process.env = win.process.env || {};
       win.process.env.API_KEY = trimmedKey;
+      
+      // ⭐️ [마법 2] 키를 저장할 때도 카드뉴스용 환경변수를 즉시 주입
+      win.process.env.GEMINI_API_KEY = trimmedKey;
+      win.process.env.VITE_GEMINI_API_KEY = trimmedKey;
     }
     showToast("API 키가 저장되었습니다.");
     setIsKeyModalOpen(false);
@@ -183,7 +191,7 @@ const App: React.FC = () => {
     performSearch(state.keyword, selectedMode.prompt);
   }, [state.keyword, selectedMode, selectedPersona]);
 
-  // [수정됨] G메일 요약 버튼 클릭 시 실행될 함수 (강제 초기화 로직 추가)
+  // ⭐️ [마법 3] G메일 데이터를 개별 출처(소스 피드)로 분리하고 맵핑합니다.
   const handleGmailSummary = async () => {
     let currentAuthStatus = isGoogleAuthReady;
 
@@ -214,31 +222,38 @@ const App: React.FC = () => {
 
     try {
       showToast("G메일에서 뉴스를 가져오는 중...");
-      const emailContents = await getNewsEmails();
+      // 배열 형태로 이메일 원본 정보들을 가져옵니다.
+      const emailData = await getNewsEmails() as any[];
       
       showToast("가져온 뉴스를 분석하는 중...");
       const service = new GeminiTrendService();
       
-      // G메일 전용 프롬프트 생성
+      // AI가 출처를 파악할 수 있도록 각 메일의 제목과 출처를 구분하여 프롬프트 전송
+      const combinedEmailText = emailData.map((e: any, index: number) => 
+        `[뉴스 ${index + 1}]\n제목: ${e.title}\n출처: ${e.source}\n내용: ${e.body}`
+      ).join('\n\n');
+
       const finalPrompt = `
         ${selectedPersona.prompt}
-        다음은 사용자의 G메일 '뉴스요약' 라벨에서 가져온 메일 본문 모음입니다.
+        다음은 사용자의 G메일 '뉴스요약' 라벨에서 가져온 최신 뉴스레터 모음입니다.
         이 내용들을 종합적으로 분석하여 최신 트렌드를 파악하고 보고서를 작성해주세요.
+        **중요: 분석 결과와 핵심 요약(KeyPoints)을 작성할 때, 어떤 출처(보낸 사람)와 제목의 뉴스에서 나온 내용인지 명확하게 언급해주세요.**
         
         [이메일 본문 내용]
-        ${emailContents}
+        ${combinedEmailText}
       `;
       
-      // 검색 도구 대신 G메일 내용을 요약하도록 모드 우회
-      const { news, analysis } = await service.fetchTrendsAndAnalysis("G메일 뉴스 요약", finalPrompt);
-      setState(prev => ({ ...prev, results: news, analysis, isLoading: false }));
+      const { analysis } = await service.fetchTrendsAndAnalysis("G메일 뉴스 요약", finalPrompt);
       
-      // 소스 피드는 G메일 원본 알림으로 대체
-      setNewsSources([{
-          title: "📧 사용자의 G메일 '뉴스요약' 라벨",
-          uri: "https://mail.google.com/mail/u/0/#label/%EB%89%B4%EC%8A%A4%EC%9A%94%EC%95%BD",
-          source: "Gmail"
-      }]);
+      // ⭐️ 핵심 기능: 가져온 이메일들의 제목, 보낸사람, 원문 링크를 우측 소스 피드 리스트로 매핑!
+      const mappedSources = emailData.map((e: any) => ({
+          title: `📧 ${e.title.length > 35 ? e.title.substring(0, 35) + '...' : e.title}`,
+          uri: e.link || "https://mail.google.com/",
+          source: e.source || "Gmail"
+      }));
+
+      setState(prev => ({ ...prev, results: mappedSources, analysis, isLoading: false }));
+      setNewsSources(mappedSources);
 
     } catch (err: any) {
       setState(prev => ({ ...prev, isLoading: false, error: err.message || "G메일 연동 또는 분석 중 오류가 발생했습니다." }));
@@ -681,11 +696,7 @@ const App: React.FC = () => {
                     !state.isLoading && (
                       <div className="py-40 text-center flex flex-col items-center no-print">
                         <div className={`w-24 h-24 rounded-3xl flex items-center justify-center shadow-sm mb-8 p-5 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
-                          <img 
-                            src={DONGA_LOGO_URL} 
-                            alt="로고" 
-                            className="w-full h-full object-contain animate-pulse" 
-                          />
+                          <img src={DONGA_LOGO_URL} alt="로고" className="w-full h-full object-contain animate-pulse" />
                         </div>
                         <p className={`text-lg font-medium max-w-lg mx-auto leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>키워드를 입력하고 분석 모드를 선택하여<br/>나만의 미니멀 AI 리포트를 생성해보세요.</p>
                       </div>
@@ -738,42 +749,23 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* API Key Modal (다크모드 대응) */}
+      {/* API Key Modal */}
       {isKeyModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-xl p-6 no-print">
           <div className={`border rounded-[32px] p-12 w-full max-w-xl shadow-2xl relative animate-in zoom-in-95 ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
             <button onClick={() => setIsKeyModalOpen(false)} className={`absolute right-8 top-8 hover:text-gray-500 ${isDarkMode ? 'text-gray-400' : 'text-gray-400'}`}><X size={28} /></button>
-            
             <div className="text-center mb-8">
               <div className="w-16 h-16 bg-[#0071e3]/10 rounded-2xl flex items-center justify-center mx-auto mb-6"><Key size={32} className="text-[#0071e3]" /></div>
               <h2 className={`text-2xl font-black mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>API 키 관리</h2>
               <p className="text-gray-500 text-sm font-medium">서비스 이용을 위해 Gemini API 키가 필요합니다.</p>
             </div>
-
             <div className={`p-5 rounded-2xl mb-8 text-left border ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-100'}`}>
               <h4 className={`text-xs font-bold mb-2 ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>📢 API 키가 없으신가요?</h4>
-              <p className="text-xs text-gray-500 leading-relaxed mb-3">
-                Google AI Studio에서 무료로 빠르고 간편하게 발급받을 수 있습니다.<br/>
-                발급받은 키를 복사하여 아래 입력창에 붙여넣기 해주세요.
-              </p>
-              <a 
-                href="https://aistudio.google.com/app/apikey" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-xs font-bold text-[#0071e3] hover:underline flex items-center gap-1"
-              >
-                👉 구글 API 키 무료로 발급받기
-              </a>
+              <p className="text-xs text-gray-500 leading-relaxed mb-3">Google AI Studio에서 무료로 빠르고 간편하게 발급받을 수 있습니다.<br/>발급받은 키를 복사하여 아래 입력창에 붙여넣기 해주세요.</p>
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-[#0071e3] hover:underline flex items-center gap-1">👉 구글 API 키 무료로 발급받기</a>
             </div>
-
             <div className="space-y-4">
-              <input 
-                type="password" 
-                placeholder="Gemini API Key 입력 (AIza...)" 
-                value={tempApiKey}
-                onChange={(e) => setTempApiKey(e.target.value)}
-                className={`w-full border rounded-2xl py-4 px-6 font-mono text-sm focus:ring-4 focus:ring-[#0071e3]/10 outline-none transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'}`}
-              />
+              <input type="password" placeholder="Gemini API Key 입력 (AIza...)" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className={`w-full border rounded-2xl py-4 px-6 font-mono text-sm focus:ring-4 focus:ring-[#0071e3]/10 outline-none transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'}`} />
               <button onClick={handleSaveApiKey} className="w-full py-4 bg-gray-900 hover:bg-black text-white rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all">저장 및 적용</button>
             </div>
           </div>
@@ -790,22 +782,8 @@ const App: React.FC = () => {
             </div>
             <p className="text-sm text-gray-500 font-medium">아래 링크를 복사하여 공유하세요.</p>
             <div className="flex gap-2">
-              <input 
-                type="text" 
-                readOnly 
-                value={window.location.href} 
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-600 focus:outline-none"
-              />
-              <button 
-                onClick={() => {
-                  navigator.clipboard.writeText(window.location.href);
-                  alert("복사되었습니다!");
-                  setIsShareModalOpen(false);
-                }} 
-                className="bg-[#0071e3] text-white px-4 rounded-xl font-bold flex items-center justify-center hover:bg-[#005bb5]"
-              >
-                <Copy size={20} />
-              </button>
+              <input type="text" readOnly value={window.location.href} className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-600 focus:outline-none" />
+              <button onClick={() => { navigator.clipboard.writeText(window.location.href); alert("복사되었습니다!"); setIsShareModalOpen(false); }} className="bg-[#0071e3] text-white px-4 rounded-xl font-bold flex items-center justify-center hover:bg-[#005bb5]"><Copy size={20} /></button>
             </div>
           </div>
         </div>
@@ -821,69 +799,38 @@ const App: React.FC = () => {
       {isReportModalOpen && state.analysis && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md">
           <div className="bg-white w-full max-w-4xl max-h-[90vh] rounded-[32px] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95">
-            
             <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-white z-10">
               <div>
-                <h2 className="text-2xl font-black text-[#1d1d1f] flex items-center gap-2">
-                  <Sparkles className="text-[#0071e3]" /> 최종 리포트
-                </h2>
-                <div className="flex items-center gap-3 mt-2">
-                  <p className="text-xs text-gray-400 font-bold">GENERATED BY TrendPulse AI • {new Date().toLocaleDateString()}</p>
-                </div>
+                <h2 className="text-2xl font-black text-[#1d1d1f] flex items-center gap-2"><Sparkles className="text-[#0071e3]" /> 최종 리포트</h2>
+                <div className="flex items-center gap-3 mt-2"><p className="text-xs text-gray-400 font-bold">GENERATED BY TrendPulse AI • {new Date().toLocaleDateString()}</p></div>
               </div>
-              <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors">
-                <X size={24} className="text-gray-600" />
-              </button>
+              <button onClick={() => setIsReportModalOpen(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"><X size={24} className="text-gray-600" /></button>
             </div>
 
             <div id="print-section" className="p-8 overflow-y-auto space-y-8 bg-white">
               <div className="bg-[#F5F5F7] p-8 rounded-3xl h-auto w-full border border-gray-100/50">
-                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 1단계: 데이터 수집 및 정제
-                </h3>
-                <p className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">
-                   {state.analysis.summary 
-                      ? renderText(state.analysis.summary) 
-                      : "수집된 데이터가 없습니다."}
-                </p>
+                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 1단계: 데이터 수집 및 정제</h3>
+                <p className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">{state.analysis.summary ? renderText(state.analysis.summary) : "수집된 데이터가 없습니다."}</p>
               </div>
 
               <div className="bg-[#F5F5F7] p-8 rounded-3xl h-auto w-full border border-gray-100/50">
-                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 2단계: AI 심층 분석
-                </h3>
+                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 2단계: AI 심층 분석</h3>
                 <div className="space-y-4">
                   {state.analysis.keyPoints.map((point, idx) => (
-                    <p key={idx} className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">
-                      {renderText(point)}
-                    </p>
+                    <p key={idx} className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">{renderText(point)}</p>
                   ))}
                 </div>
               </div>
 
               <div className="bg-[#F5F5F7] p-8 rounded-3xl h-auto w-full border border-gray-100/50">
-                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 3단계: OSMU 전략
-                </h3>
-                <p className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">
-                  {renderText(osmuText)}
-                </p>
+                <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#0071e3]"></span> 3단계: OSMU 전략</h3>
+                <p className="text-[#1d1d1f] text-base leading-relaxed whitespace-pre-line break-words font-medium">{renderText(osmuText)}</p>
               </div>
             </div>
 
             <div className="p-6 border-t border-gray-100 bg-white flex gap-3 print:hidden">
-              <button 
-                onClick={handleDownloadPDF} 
-                className="flex-1 py-4 bg-[#0071e3] text-white rounded-xl font-bold hover:bg-[#0077ED] transition-all shadow-lg flex items-center justify-center gap-2"
-              >
-                <LayoutDashboard size={20} /> 리포트 PDF 다운로드
-              </button>
-              <button 
-                onClick={handleShare}
-                className="w-32 py-4 bg-gray-100 text-[#1d1d1f] rounded-xl font-bold hover:bg-gray-200 transition-all flex items-center justify-center gap-2"
-              >
-                <Share2 size={20} /> 공유
-              </button>
+              <button onClick={handleDownloadPDF} className="flex-1 py-4 bg-[#0071e3] text-white rounded-xl font-bold hover:bg-[#0077ED] transition-all shadow-lg flex items-center justify-center gap-2"><LayoutDashboard size={20} /> 리포트 PDF 다운로드</button>
+              <button onClick={handleShare} className="w-32 py-4 bg-gray-100 text-[#1d1d1f] rounded-xl font-bold hover:bg-gray-200 transition-all flex items-center justify-center gap-2"><Share2 size={20} /> 공유</button>
             </div>
           </div>
         </div>
