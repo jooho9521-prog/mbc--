@@ -12,8 +12,8 @@ const getApiKey = () => {
   return key.trim();
 };
 
-// 타임아웃 래퍼: 서버가 고장나서 무한 로딩되는 것을 10초 만에 끊어냅니다.
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10000) => {
+// 타임아웃 래퍼: 서버가 고장나서 무한 로딩되는 것을 15초 만에 끊어냅니다.
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -42,7 +42,7 @@ const translateToEnglishKeyword = async (keyword: string, key: string): Promise<
 };
 
 /**
- * 👑 AI 실패 시 "주제에 맞는 실사 사진"을 가져오는 궁극의 3중 방어막!
+ * 👑 현존 최강 무료 오픈소스 AI (FLUX) 를 활용한 초고퀄리티 이미지 생성 로직
  */
 export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string | null> => {
   const cacheKey = `${prompt}_${stylePrompt || 'default'}`;
@@ -61,7 +61,7 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
       let base64Result = "";
 
       // ----------------------------------------------------
-      // [1단계] 구글 공식 최고 성능 모델 (Imagen 3) 시도
+      // [1단계] 구글 공식 최고 성능 모델 (Imagen 3) 시도 (유료급 퀄리티)
       // ----------------------------------------------------
       if (key) {
         try {
@@ -81,21 +81,25 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             if (bytes) base64Result = `data:image/jpeg;base64,${bytes}`;
           }
         } catch (e) {
-          console.warn("1단계 구글 API 실패. 대체 AI로 넘어갑니다.");
+          console.warn("1단계 구글 API 실패. 최상급 무료 AI로 넘어갑니다.");
         }
       }
 
       // ----------------------------------------------------
-      // [2단계] 무료 AI (Pollinations) 시도 (현재 530 폭주 중인 녀석)
-      // 서버 과부하를 막기 위해 프롬프트를 아주 짧게 던집니다.
+      // [2단계] 🔥무료지만 최상급 퀄리티(FLUX 모델) 강제 호출🔥
+      // 서버 폭주(530)를 막기 위해 매번 새로운 seed 값을 부여합니다!
       // ----------------------------------------------------
       if (!base64Result) {
-        console.log(`🚀 주제 매칭 AI 시도 중... 렌더링 키워드: ${englishKeyword}`);
+        console.log(`🚀 고퀄리티 FLUX AI 시도 중... 렌더링 키워드: ${englishKeyword}`);
         try {
-          const shortPrompt = `${englishKeyword} professional cinematic vertical background without text`;
-          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(shortPrompt)}?width=1080&height=1920&nologo=true`;
+          // 최고급 퀄리티를 뽑아내기 위한 프롬프트 엔지니어링
+          const fluxPrompt = `Masterpiece, award-winning, stunning 4k vertical background representing ${englishKeyword}. Highly detailed, cinematic lighting, no text, clean composition.`;
+          const randomSeed = Math.floor(Math.random() * 1000000); // 530 캐시 에러 방지용 난수
           
-          const fallbackResponse = await fetchWithTimeout(fallbackUrl, {}, 10000);
+          // model=flux 파라미터를 추가하여 압도적인 퀄리티의 모델로 라우팅합니다.
+          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fluxPrompt)}?width=1080&height=1920&nologo=true&model=flux&seed=${randomSeed}`;
+          
+          const fallbackResponse = await fetchWithTimeout(fallbackUrl, {}, 15000); // 고퀄리티라 15초 대기
           if (fallbackResponse.ok) {
             const blob = await fallbackResponse.blob();
             base64Result = await new Promise((resolve, reject) => {
@@ -106,21 +110,18 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             });
           }
         } catch (e) {
-          console.warn("2단계 무료 AI 서버 폭주(530). 마지막 실사 사진 대체로 넘어갑니다.");
+          console.warn("2단계 FLUX 모델 지연. 마지막 실사 사진으로 대체합니다.");
         }
       }
 
       // ----------------------------------------------------
-      // [3단계] 🔥대망의 최후 보루: 검색어(주제) 일치 100% 무료 사진 호출!🔥
-      // AI 서버가 뻗어도 '테슬라'면 테슬라, '애플'이면 애플 사진을 강제로 가져옵니다.
+      // [3단계] 최후 보루: 검색어(주제) 일치 100% 무료 사진 호출!
       // ----------------------------------------------------
       if (!base64Result) {
          try {
-            console.log(`🚀 3단계: AI 서버 전체 폭주! 주제(${englishKeyword}) 기반 무료 사진 데이터베이스에서 이미지를 가져옵니다.`);
-            // 키워드 중 첫 번째 메인 단어만 뽑아내어 사진 검색 확률을 극대화합니다.
+            console.log(`🚀 3단계: AI 서버 지연, 주제(${englishKeyword}) 기반 무료 고화질 사진을 가져옵니다.`);
             const safeKeyword = englishKeyword.split(' ')[0] || "trend";
             
-            // Flickr 데이터베이스에서 키워드에 맞는 세로형(1080x1920) 사진을 무작위로 가져옵니다!
             const flickrUrl = `https://loremflickr.com/1080/1920/${safeKeyword},background/all`;
             const flickrResponse = await fetchWithTimeout(flickrUrl, {}, 10000);
             const flickrBlob = await flickrResponse.blob();
@@ -132,7 +133,7 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
               reader.readAsDataURL(flickrBlob);
             });
          } catch(e) {
-            console.warn("3단계 실사 사진 로드마저 실패했습니다.");
+            console.warn("3단계 사진 로드 실패.");
          }
       }
 
