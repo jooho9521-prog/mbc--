@@ -4,10 +4,8 @@ const DISCOVERY_DOC = "https://www.googleapis.com/discovery/v1/apis/gmail/v1/res
 
 let tokenClient: any;
 
-// [수정됨] 구글 최신 인증 시스템(GIS) + GAPI 동시 초기화
 export const initGoogleAuth = () => {
   return new Promise((resolve) => {
-    // 1. 구글 API 스크립트 자동 로드
     const loadGapi = new Promise((res) => {
       if ((window as any).gapi) return res(true);
       const script = document.createElement('script');
@@ -16,7 +14,6 @@ export const initGoogleAuth = () => {
       document.body.appendChild(script);
     });
 
-    // 2. 구글 최신 인증(GIS) 스크립트 자동 로드
     const loadGis = new Promise((res) => {
       if ((window as any).google?.accounts?.oauth2) return res(true);
       const script = document.createElement('script');
@@ -25,23 +22,20 @@ export const initGoogleAuth = () => {
       document.body.appendChild(script);
     });
 
-    // 스크립트 2개가 모두 준비되면 실행
     Promise.all([loadGapi, loadGis]).then(() => {
       const gapi = (window as any).gapi;
       const google = (window as any).google;
 
       gapi.load('client', async () => {
         try {
-          // G메일 API 기능 준비
           await gapi.client.init({
             discoveryDocs: [DISCOVERY_DOC],
           });
           
-          // 최신 로그인 팝업(Token Client) 준비
           tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: CLIENT_ID,
             scope: SCOPES,
-            callback: '', // 버튼 누를 때 콜백 지정
+            callback: '', 
           });
           
           resolve(true);
@@ -54,7 +48,6 @@ export const initGoogleAuth = () => {
   });
 };
 
-// [수정됨] 메일 가져오기 (최신 로그인 방식 적용)
 export const getNewsEmails = (): Promise<string> => {
   return new Promise((resolve, reject) => {
     if (!tokenClient) {
@@ -63,20 +56,20 @@ export const getNewsEmails = (): Promise<string> => {
 
     const gapi = (window as any).gapi;
 
-    // 로그인 팝업에서 사용자가 '허용'을 누른 직후 실행될 로직
     tokenClient.callback = async (resp: any) => {
       if (resp.error !== undefined) {
         return reject(new Error("구글 로그인이 취소되었거나 실패했습니다."));
       }
 
       try {
-        // 1. '뉴스요약' 라벨 ID 찾기 
+        // ⭐️ [수정됨] 띄어쓰기를 무시하고 '뉴스요약' 라벨을 무조건 찾아냅니다!
         const labelsRes = await gapi.client.gmail.users.labels.list({ userId: 'me' });
-        const newsLabel = labelsRes.result.labels.find((l: any) => l.name === '뉴스요약');
+        const newsLabel = labelsRes.result.labels.find((l: any) => 
+          l.name && l.name.replace(/\s+/g, '').includes('뉴스요약')
+        );
 
         if (!newsLabel) throw new Error("'뉴스요약' 라벨을 찾을 수 없습니다. G메일에 '뉴스요약' 라벨을 먼저 만들어주세요.");
 
-        // 2. 해당 라벨 메일 목록 (최근 5개) 가져오기
         const messagesRes = await gapi.client.gmail.users.messages.list({
           userId: 'me',
           labelIds: [newsLabel.id],
@@ -86,7 +79,6 @@ export const getNewsEmails = (): Promise<string> => {
         const messages = messagesRes.result.messages || [];
         if (messages.length === 0) throw new Error("'뉴스요약' 라벨에 메일이 없습니다.");
 
-        // 3. 메일 본문 디코딩
         const emailContents = await Promise.all(messages.map(async (msg: any) => {
           const details = await gapi.client.gmail.users.messages.get({ userId: 'me', id: msg.id });
           const payload = details.result.payload;
@@ -114,7 +106,6 @@ export const getNewsEmails = (): Promise<string> => {
       }
     };
 
-    // 🚀 드디어 구글 로그인 팝업 띄우기!
     if (gapi.client.getToken() === null) {
       tokenClient.requestAccessToken({ prompt: 'consent' });
     } else {

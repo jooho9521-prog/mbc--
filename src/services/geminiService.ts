@@ -255,3 +255,29 @@ export const generateMindMapData = async (keyword: string) => {
     return null;
   }
 };
+
+// ⭐️ [핵심 해결 부분] 사용자님 코드에서 잘려있던 이미지 생성 함수를 완벽 복구 및 API 키 연동 처리했습니다!
+export const generateImage = async (prompt: string): Promise<string> => {
+  try {
+    const key = getApiKey();
+    if (!key) throw new Error("An API Key must be set when running in a browser");
+
+    const ai = new GoogleGenAI({ apiKey: key });
+    const response = await ai.models.generateImages({
+      model: 'imagen-3.0-generate-002',
+      prompt: prompt,
+      config: {
+        numberOfImages: 1,
+        outputMimeType: "image/jpeg",
+      }
+    });
+    
+    const base64Data = response.generatedImages?.[0]?.image?.imageBytes;
+    if (!base64Data) throw new Error("이미지 데이터가 없습니다.");
+    
+    return base64Data;
+  } catch (e) {
+    console.error("API Call Error: Gemini Image Generation failed.", e);
+    throw e;
+  }
+};
