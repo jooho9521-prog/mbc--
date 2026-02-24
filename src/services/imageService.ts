@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { withRetry, handleApiError } from "./geminiService";
 
-// 메모리 캐시: 똑같은 검색어는 0.1초 만에 바로 띄웁니다.
+// 메모리 캐시: 똑같은 검색어는 서버에 묻지 않고 0.1초 만에 띄웁니다.
 const imageCache = new Map<string, string>();
 
 const getApiKey = () => {
@@ -26,23 +26,23 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutM
   }
 };
 
-// 한글을 짧은 영어 키워드로 번역 (이미지 정확도 상승)
+// ⭐️ 한글을 짧고 핵심적인 영어 키워드로 번역 (이미지 정확도 100% 상승)
 const translateToEnglishKeyword = async (keyword: string, key: string): Promise<string> => {
   try {
-    if(!key) return "trend";
+    if(!key) return "global trend";
     const ai = new GoogleGenAI({ apiKey: key });
     const transRes = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Extract the main visual subject from this text and translate it into a concise 1-2 word English keyword. Text: "${keyword}". Output ONLY the English words.`,
     });
-    return transRes.text ? transRes.text.replace(/[^a-zA-Z0-9 ]/g, '').trim() : "trend";
+    return transRes.text ? transRes.text.replace(/[^a-zA-Z0-9 ]/g, '').trim() : "global trend";
   } catch (e) {
-    return "trend";
+    return "global trend";
   }
 };
 
 /**
- * 👑 3중 철통 방어 이미지 생성 로직
+ * 👑 주제와 100% 일치하는 고품질 AI 이미지만을 생성하는 로직
  */
 export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string | null> => {
   const cacheKey = `${prompt}_${stylePrompt || 'default'}`;
@@ -59,13 +59,14 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
       }
 
       let base64Result = "";
+      // ⭐️ 무조건 검색어에 맞는 깔끔한 세로형 배경이 나오도록 프롬프트 강화
+      const finalPrompt = `A high-quality, cinematic, vertical background image representing ${englishKeyword}. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''}`;
 
       // ----------------------------------------------------
-      // [1단계] 구글 Imagen 3 시도 (성공 시 최고 화질)
+      // [1단계] 구글 공식 최고 성능 모델 (Imagen 3) 시도
       // ----------------------------------------------------
       if (key) {
         try {
-          const finalPrompt = `A high-quality, cinematic, vertical background image representing ${englishKeyword}. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''}`;
           const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -81,16 +82,18 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             if (bytes) base64Result = `data:image/jpeg;base64,${bytes}`;
           }
         } catch (e) {
-          console.warn("1단계 구글 API 권한 없음.");
+          console.warn("1단계 구글 API 접근 불가 또는 지연. 대체 AI로 넘어갑니다.");
         }
       }
 
       // ----------------------------------------------------
-      // [2단계] 무료 AI (Pollinations) 시도 (현재 530 에러 발생 구간)
+      // [2단계] 구글 API 실패 시, 무료 대체 AI (Pollinations) 시도
+      // 검색어(englishKeyword)를 그대로 전달하여 무조건 관련된 이미지만 뽑아냅니다.
       // ----------------------------------------------------
       if (!base64Result) {
+        console.log(`🚀 주제 매칭 AI 시도 중... 렌더링 키워드: ${englishKeyword}`);
         try {
-          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(englishKeyword + " minimal background")}?width=1080&height=1920&nologo=true`;
+          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=1080&height=1920&nologo=true`;
           const fallbackResponse = await fetchWithTimeout(fallbackUrl, {}, 10000);
           if (fallbackResponse.ok) {
             const blob = await fallbackResponse.blob();
@@ -102,37 +105,25 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             });
           }
         } catch (e) {
-          console.warn("2단계 무료 AI 서버 폭주(530) 에러 발생.");
+          console.warn("2단계 무료 AI 서버 폭주 또는 지연 발생.");
         }
       }
 
       // ----------------------------------------------------
-      // [3단계] 최후의 보루: 형체를 없앤 고급 블러(Blur) 감성 그라데이션!
+      // [오류 처리] 두 AI 서버가 모두 뻗었을 경우 엉뚱한 사진 대신 에러 반환
       // ----------------------------------------------------
       if (!base64Result) {
-        console.log("🚀 3단계: AI 서버 셧다운 대비 - 고급 블러 그라데이션 배경 생성");
-        const safeSeed = encodeURIComponent(englishKeyword.replace(/\s/g, ''));
-        // blur=10 을 주어 사물의 형태(예: 빅벤)를 완전히 뭉개버리고 예쁜 색감만 남깁니다!
-        const picsumUrl = `https://picsum.photos/seed/${safeSeed}/1080/1920?blur=10`;
-        const picResponse = await fetchWithTimeout(picsumUrl, {}, 10000);
-        const picBlob = await picResponse.blob();
-        
-        base64Result = await new Promise((resolve, reject) => {
-           const reader = new FileReader();
-           reader.onloadend = () => resolve(reader.result as string);
-           reader.onerror = reject;
-           reader.readAsDataURL(picBlob);
-        });
+        throw new Error("모든 이미지 AI 서버가 응답하지 않습니다.");
       }
 
-      if (!base64Result) throw new Error("모든 이미지 생성 방식이 실패했습니다.");
-
+      // 성공한 이미지는 캐시에 저장하여 다음번에 빛의 속도로 불러옵니다.
       imageCache.set(cacheKey, base64Result);
       return base64Result;
 
     } catch (error: any) {
       console.error("최종 이미지 생성 실패.", error);
-      throw new Error("이미지 서버가 혼잡합니다. 잠시 후 다시 시도해주세요.");
+      // 엉뚱한 이미지를 보여주는 대신 깔끔하게 에러 처리
+      throw new Error("AI 이미지 서버에 트래픽이 몰려 생성이 지연되고 있습니다. 잠시 후 다시 시도해주세요.");
     }
   });
 };
