@@ -29,20 +29,20 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutM
 // ⭐️ 한글을 짧고 핵심적인 영어 키워드로 번역 (이미지 정확도 100% 상승)
 const translateToEnglishKeyword = async (keyword: string, key: string): Promise<string> => {
   try {
-    if(!key) return "global trend";
+    if(!key) return "trend";
     const ai = new GoogleGenAI({ apiKey: key });
     const transRes = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Extract the main visual subject from this text and translate it into a concise 1-2 word English keyword. Text: "${keyword}". Output ONLY the English words.`,
+      contents: `Extract the main visual subject from this text and translate it into a concise 1-2 word English keyword (e.g., Tesla, Smartphone, Office). Text: "${keyword}". Output ONLY the English words.`,
     });
-    return transRes.text ? transRes.text.replace(/[^a-zA-Z0-9 ]/g, '').trim() : "global trend";
+    return transRes.text ? transRes.text.replace(/[^a-zA-Z0-9 ]/g, '').trim() : "trend";
   } catch (e) {
-    return "global trend";
+    return "trend";
   }
 };
 
 /**
- * 👑 주제와 100% 일치하는 고품질 AI 이미지만을 생성하는 로직
+ * 👑 AI 실패 시 "주제에 맞는 실사 사진"을 가져오는 궁극의 3중 방어막!
  */
 export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string | null> => {
   const cacheKey = `${prompt}_${stylePrompt || 'default'}`;
@@ -59,14 +59,13 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
       }
 
       let base64Result = "";
-      // ⭐️ 무조건 검색어에 맞는 깔끔한 세로형 배경이 나오도록 프롬프트 강화
-      const finalPrompt = `A high-quality, cinematic, vertical background image representing ${englishKeyword}. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''}`;
 
       // ----------------------------------------------------
       // [1단계] 구글 공식 최고 성능 모델 (Imagen 3) 시도
       // ----------------------------------------------------
       if (key) {
         try {
+          const finalPrompt = `A high-quality, cinematic, vertical background image representing ${englishKeyword}. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''}`;
           const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -82,18 +81,20 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             if (bytes) base64Result = `data:image/jpeg;base64,${bytes}`;
           }
         } catch (e) {
-          console.warn("1단계 구글 API 접근 불가 또는 지연. 대체 AI로 넘어갑니다.");
+          console.warn("1단계 구글 API 실패. 대체 AI로 넘어갑니다.");
         }
       }
 
       // ----------------------------------------------------
-      // [2단계] 구글 API 실패 시, 무료 대체 AI (Pollinations) 시도
-      // 검색어(englishKeyword)를 그대로 전달하여 무조건 관련된 이미지만 뽑아냅니다.
+      // [2단계] 무료 AI (Pollinations) 시도 (현재 530 폭주 중인 녀석)
+      // 서버 과부하를 막기 위해 프롬프트를 아주 짧게 던집니다.
       // ----------------------------------------------------
       if (!base64Result) {
         console.log(`🚀 주제 매칭 AI 시도 중... 렌더링 키워드: ${englishKeyword}`);
         try {
-          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=1080&height=1920&nologo=true`;
+          const shortPrompt = `${englishKeyword} professional cinematic vertical background without text`;
+          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(shortPrompt)}?width=1080&height=1920&nologo=true`;
+          
           const fallbackResponse = await fetchWithTimeout(fallbackUrl, {}, 10000);
           if (fallbackResponse.ok) {
             const blob = await fallbackResponse.blob();
@@ -105,25 +106,46 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             });
           }
         } catch (e) {
-          console.warn("2단계 무료 AI 서버 폭주 또는 지연 발생.");
+          console.warn("2단계 무료 AI 서버 폭주(530). 마지막 실사 사진 대체로 넘어갑니다.");
         }
       }
 
       // ----------------------------------------------------
-      // [오류 처리] 두 AI 서버가 모두 뻗었을 경우 엉뚱한 사진 대신 에러 반환
+      // [3단계] 🔥대망의 최후 보루: 검색어(주제) 일치 100% 무료 사진 호출!🔥
+      // AI 서버가 뻗어도 '테슬라'면 테슬라, '애플'이면 애플 사진을 강제로 가져옵니다.
       // ----------------------------------------------------
       if (!base64Result) {
-        throw new Error("모든 이미지 AI 서버가 응답하지 않습니다.");
+         try {
+            console.log(`🚀 3단계: AI 서버 전체 폭주! 주제(${englishKeyword}) 기반 무료 사진 데이터베이스에서 이미지를 가져옵니다.`);
+            // 키워드 중 첫 번째 메인 단어만 뽑아내어 사진 검색 확률을 극대화합니다.
+            const safeKeyword = englishKeyword.split(' ')[0] || "trend";
+            
+            // Flickr 데이터베이스에서 키워드에 맞는 세로형(1080x1920) 사진을 무작위로 가져옵니다!
+            const flickrUrl = `https://loremflickr.com/1080/1920/${safeKeyword},background/all`;
+            const flickrResponse = await fetchWithTimeout(flickrUrl, {}, 10000);
+            const flickrBlob = await flickrResponse.blob();
+            
+            base64Result = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(flickrBlob);
+            });
+         } catch(e) {
+            console.warn("3단계 실사 사진 로드마저 실패했습니다.");
+         }
       }
 
-      // 성공한 이미지는 캐시에 저장하여 다음번에 빛의 속도로 불러옵니다.
+      if (!base64Result) {
+        throw new Error("모든 이미지 연동 서버가 응답하지 않습니다.");
+      }
+
       imageCache.set(cacheKey, base64Result);
       return base64Result;
 
     } catch (error: any) {
       console.error("최종 이미지 생성 실패.", error);
-      // 엉뚱한 이미지를 보여주는 대신 깔끔하게 에러 처리
-      throw new Error("AI 이미지 서버에 트래픽이 몰려 생성이 지연되고 있습니다. 잠시 후 다시 시도해주세요.");
+      throw new Error("현재 이미지 서버 전역에 트래픽이 폭주하고 있습니다. 잠시 후 다시 시도해주세요.");
     }
   });
 };
