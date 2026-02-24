@@ -1,34 +1,15 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis } from "../types";
 
-console.log("🚀 최신 버전의 GeminiService가 정상 로드되었습니다!"); 
+console.log("🚀 초강력 텍스트 방어막이 추가된 GeminiService 로드 완료!");
 
-// ⭐️ [완벽 방어] 어떤 환경에서든 API 키를 반드시 찾아내는 초강력 헬퍼 함수
+// ⭐️ 브라우저 환경에서 API 키를 끝까지 추적해서 찾아내는 헬퍼 함수
 const getApiKey = () => {
   let key = "";
-  
-  // 1순위: 브라우저 로컬 스토리지에서 직접 가져오기
-  try {
-    if (typeof window !== 'undefined') {
-      key = localStorage.getItem('gemini_api_key') || "";
-    }
-  } catch (e) {}
-
-  // 2순위: window.process.env 에서 찾기 (우리가 App.tsx에서 강제 주입한 값)
-  if (!key) {
-    try {
-      key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || "";
-    } catch (e) {}
-  }
-
-  // 3순위: VITE 환경변수에서 찾기
-  if (!key) {
-    try {
-      key = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-    } catch (e) {}
-  }
-
-  return key.trim(); // 공백 제거 후 반환
+  try { key = localStorage.getItem('gemini_api_key') || ""; } catch (e) {}
+  if (!key) { try { key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || ""; } catch (e) {} }
+  if (!key) { try { key = (import.meta as any).env?.VITE_GEMINI_API_KEY || ""; } catch (e) {} }
+  return key.trim();
 };
 
 const cleanAndParseJson = (text: string) => {
@@ -79,17 +60,17 @@ export const handleApiError = (error: any): string => {
     return "AI Model connection failed (404). Switching to supported model.";
   }
   if (lowerMsg.includes("429") || lowerMsg.includes("quota") || lowerMsg.includes("api key") || lowerMsg.includes("api_key_missing")) {
-    return "API 키가 없거나 올바르지 않습니다. 우측 상단의 [API 키 관리]에서 키를 다시 입력해주세요.";
+    return "API 키가 없거나 올바르지 않습니다. 우측 상단의 [API 키 관리]에서 다시 한 번 저장해주세요.";
   }
   if (lowerMsg.includes("503") || lowerMsg.includes("overloaded")) {
-    return "Server overloaded (503). Please try again soon.";
+    return "현재 구글 서버에 전 세계적인 접속이 폭주하고 있습니다. 잠시 후 시도해주세요.";
   }
   
   return message.length > 150 ? message.substring(0, 150) + "..." : message;
 };
 
-// Exponential backoff retry logic
-export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 2000): Promise<T> => {
+// ⭐️ 재시도 로직 (서버가 뻗었을 때 끈질기게 다시 물어봅니다)
+export const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> => {
   try {
     return await fn();
   } catch (error: any) {
@@ -99,10 +80,10 @@ export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 20
     const isFatal = status === 404 || status === 400 || message.includes("not found");
     if (isFatal) throw error;
 
-    const isTransient = status === 503 || status === 429 || message.includes("503") || message.includes("quota");
+    const isTransient = status === 503 || status === 429 || message.includes("503") || message.includes("quota") || message.includes("unavailable");
 
     if (retries > 0 && isTransient) {
-      console.warn(`[Retry] Transient error detected. Retrying in ${delay/1000}s...`);
+      console.warn(`[Retry] 구글 서버 혼잡 감지! ${delay/1000}초 후 다시 시도합니다... (남은 횟수: ${retries})`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return withRetry(fn, retries - 1, delay * 2);
     }
@@ -191,56 +172,60 @@ export class GeminiTrendService {
     } catch (e) {
       console.error("Trend Analysis Error:", e);
       return {
-        news: [
-          { title: `🔍 '${keyword}' 관련 최신 구글 뉴스`, uri: `https://news.google.com/search?q=${encodeURIComponent(keyword)}`, source: "Google News" },
-          { title: `📰 '${keyword}' 네이버 뉴스 상세 검색`, uri: `https://search.naver.com/search.naver?where=news&query=${encodeURIComponent(keyword)}`, source: "Naver News" },
-          { title: `📈 '${keyword}' 구글 트렌드 빅데이터 확인`, uri: `https://trends.google.com/trends/explore?q=${encodeURIComponent(keyword)}`, source: "Google Trends" },
-          { title: `💬 '${keyword}' X(트위터) 실시간 반응 보기`, uri: `https://twitter.com/search?q=${encodeURIComponent(keyword)}&f=live`, source: "X (Twitter)" },
-          { title: `▶️ '${keyword}' 유튜브 관련 영상 찾아보기`, uri: `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}`, source: "YouTube" }
-        ],
-        analysis: { summary: "1. API 키 오류 또는 일시적인 트래픽 과부하입니다.\n\n2. 우측 상단의 [API 키 관리] 버튼을 눌러 키가 정확한지 확인해 주세요.", sentiment: "neutral", keyPoints: [], growthScore: 0 }
+        news: [],
+        analysis: { summary: "1. API 키 오류 또는 구글 서버의 일시적인 트래픽 과부하입니다.\n\n2. 우측 상단의 [API 키 관리] 버튼을 눌러 키가 정확한지 확인해 주세요.", sentiment: "neutral", keyPoints: [], growthScore: 0 }
       };
     }
   }
 }
 
+// ⭐️ [핵심 방어 적용] 카드뉴스 글씨를 쓸 때 구글 서버 503 에러가 나면 화면이 죽지 않도록 방어합니다.
 export const generateExpandedContent = async (summary: string, type: string, stylePrompt?: string) => {
   try {
-    const key = getApiKey();
-    if (!key) throw new Error("API_KEY_MISSING");
+    return await withRetry(async () => {
+      const key = getApiKey();
+      if (!key) throw new Error("API_KEY_MISSING");
 
-    const ai = new GoogleGenAI({ apiKey: key });
-    const prompt = `Create high-quality ${type} content based on this summary: ${summary}. ${stylePrompt ? `Apply style: ${stylePrompt}` : ''} Output only the generated text or JSON as appropriate.`;
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: type === 'image' ? { responseMimeType: "application/json" } : {}
-    });
-    return response.text || "";
+      const ai = new GoogleGenAI({ apiKey: key });
+      const prompt = `Create high-quality ${type} content based on this summary: ${summary}. ${stylePrompt ? `Apply style: ${stylePrompt}` : ''} Output only the generated text or JSON as appropriate.`;
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: type === 'image' ? { responseMimeType: "application/json" } : {}
+      });
+      return response.text || "";
+    }, 3, 2000); // 구글 서버가 뻗어도 3번 끈질기게 다시 물어봅니다!
   } catch (e) { 
-    console.error("Content Expansion Error:", e);
-    throw e; 
+    console.error("Content Expansion Final Error:", e);
+    // ⭐️ 3번 다 실패해도 화면이 죽지 않고 안내 문구가 적힌 예쁜 카드뉴스를 생성합니다.
+    if (type === 'image') {
+      return JSON.stringify({
+        title: "⏳ AI 서버 접속 대기 중",
+        body: "현재 구글 AI 서버에 전 세계적인 접속이 폭주하여 텍스트 분석이 지연되었습니다.\n1~2분 뒤 다시 카드뉴스 생성을 눌러주시면 정상 작동합니다."
+      });
+    }
+    return "현재 구글 AI 서버가 혼잡합니다. 잠시 후 다시 시도해 주세요.";
   }
 };
 
 export const generateTTS = async (text: string, voiceName: string = 'Zephyr', styleInstruction?: string) => {
   try {
-    const key = getApiKey();
-    if (!key) throw new Error("API_KEY_MISSING");
+    return await withRetry(async () => {
+      const key = getApiKey();
+      if (!key) throw new Error("API_KEY_MISSING");
 
-    const ai = new GoogleGenAI({ apiKey: key });
-    const prompt = styleInstruction ? `Say this ${styleInstruction}: ${text}` : text;
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: prompt }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName } },
+      const ai = new GoogleGenAI({ apiKey: key });
+      const prompt = styleInstruction ? `Say this ${styleInstruction}: ${text}` : text;
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
         },
-      },
-    });
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+      });
+      return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+    }, 3, 2000);
   } catch (e) {
     console.error("TTS generation failed:", e);
     throw e;
@@ -282,29 +267,21 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ [가장 핵심] 이미지 생성은 구글 패키지를 완전히 우회하고 서버에 '직접(REST API)' 통신합니다!
+// ⭐️ 기존의 다이렉트 통신 방식을 안전하게 유지 (만약의 상황 대비용)
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
     const key = getApiKey();
     if (!key) {
-        alert("🚨 브라우저에서 API 키가 인식되지 않았습니다. [API 키 관리] 버튼을 눌러 키를 다시 저장해주세요!");
+        alert("🚨 API 키를 찾을 수 없습니다! 우측 상단 [API 키 관리] 버튼을 눌러 다시 한 번 저장해주세요.");
         throw new Error("API_KEY_MISSING");
     }
 
-    // GoogleGenAI 껍데기를 버리고, 키를 URL 파라미터에 확실하게 박아서 전송합니다.
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`;
-    
-    const response = await fetch(url, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         instances: [{ prompt: prompt }],
-        parameters: {
-          sampleCount: 1,
-          outputOptions: { mimeType: "image/jpeg" }
-        }
+        parameters: { sampleCount: 1, outputOptions: { mimeType: "image/jpeg" } }
       })
     });
 
@@ -316,12 +293,11 @@ export const generateImage = async (prompt: string): Promise<string> => {
     const data = await response.json();
     const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
     
-    if (!base64Data) throw new Error("이미지 데이터가 비어있습니다.");
+    if (!base64Data) throw new Error("이미지 데이터가 없습니다.");
     
-    // UI에서 캔버스에 즉시 그려질 수 있도록 Base64 형식을 그대로 돌려줍니다.
     return base64Data;
   } catch (e) {
     console.error("API Call Error: Gemini Image Generation failed.", e);
-    throw e; // 에러를 위로 던져서 UI에서 잡을 수 있도록 함
+    throw e;
   }
 };
