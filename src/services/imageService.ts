@@ -10,7 +10,8 @@ const getApiKey = () => {
 };
 
 /**
- * ⭐️ [절대 방어] 구글 API가 권한 문제로 막히더라도, 대체 AI를 통해 100% 무조건 이미지를 생성합니다!
+ * ⭐️ [3중 철통 방어] 구글 API -> 대체 AI -> 최후의 기본 고화질 배경 순으로 
+ * 무슨 일이 있어도 무조건 이미지를 화면에 띄웁니다!
  */
 export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string | null> => {
   return withRetry(async () => {
@@ -18,7 +19,9 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
       const key = getApiKey();
       const finalPrompt = `A professional, cinematic, high-quality vertical business background for a trend report. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''} Topic: ${prompt}`;
 
-      // 1단계: 구글 Imagen 3에 먼저 요청 시도
+      // ----------------------------------------------------
+      // [1단계] 구글 Imagen 3에 먼저 요청 시도 (성공하면 최고 퀄리티)
+      // ----------------------------------------------------
       if (key) {
         try {
           const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
@@ -30,37 +33,57 @@ export const generateImage = async (prompt: string, stylePrompt?: string): Promi
             })
           });
 
-          // 구글에서 성공적으로 이미지를 주면 바로 사용
           if (response.ok) {
             const data = await response.json();
             const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
             if (base64Data) return `data:image/jpeg;base64,${base64Data}`;
           }
-        } catch (googleError) {
-          console.warn("구글 API 권한 제한됨. 즉시 대체 AI 서버로 우회합니다...", googleError);
+        } catch (e) {
+          console.warn("구글 API 1단계 실패, 대체 AI로 넘어갑니다...");
         }
       }
 
-      // 2단계: 구글이 404 에러로 튕겨내면? ➡️ 키 없이도 작동하는 무료 고품질 AI로 자동 우회!
-      console.log("🚀 대체 AI(Pollinations)를 사용하여 카드뉴스 이미지를 강제 생성합니다.");
-      const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=1080&height=1920&nologo=true`;
+      // ----------------------------------------------------
+      // [2단계] 구글이 막혔을 경우: 무료 대체 AI (Pollinations) 시도
+      // ----------------------------------------------------
+      try {
+        console.log("🚀 2단계: 대체 AI(Pollinations)를 사용하여 생성을 시도합니다.");
+        // 서버 에러를 줄이기 위해 프롬프트를 짧고 안전하게 인코딩
+        const safeTopic = encodeURIComponent(prompt.substring(0, 30));
+        const fallbackUrl = `https://image.pollinations.ai/prompt/abstract%20professional%20background%20${safeTopic}?width=1080&height=1920&nologo=true`;
+        
+        const fallbackResponse = await fetch(fallbackUrl);
+        if (fallbackResponse.ok) {
+          const blob = await fallbackResponse.blob();
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        }
+      } catch (e) {
+        console.warn("대체 AI 2단계 실패 (530 에러 등 서버 폭주), 최후의 수단으로 넘어갑니다...");
+      }
+
+      // ----------------------------------------------------
+      // [3단계] AI 서버들이 모두 뻗었을 경우: 절대 실패 없는 고화질 랜덤 배경 (최후의 보루)
+      // ----------------------------------------------------
+      console.log("🚀 3단계: AI 서버 지연으로 인해 고품질 기본 감성 배경으로 안전하게 대체합니다.");
+      const picsumUrl = `https://picsum.photos/1080/1920/?blur=2&random=${Math.random()}`; // 고급스러운 블러 처리된 고화질 이미지
+      const picResponse = await fetch(picsumUrl);
+      const picBlob = await picResponse.blob();
       
-      const fallbackResponse = await fetch(fallbackUrl);
-      if (!fallbackResponse.ok) throw new Error("대체 이미지 서버도 응답하지 않습니다.");
-      
-      const blob = await fallbackResponse.blob();
-      
-      // 화면에 즉시 띄울 수 있도록 형변환
       return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
+         const reader = new FileReader();
+         reader.onloadend = () => resolve(reader.result as string);
+         reader.onerror = reject;
+         reader.readAsDataURL(picBlob);
       });
       
     } catch (error: any) {
       console.error("최종 이미지 생성 실패.", error);
-      throw new Error(handleApiError(error));
+      throw new Error("이미지 서버에 일시적인 문제가 발생했습니다. 다시 시도해주세요.");
     }
   });
 };
