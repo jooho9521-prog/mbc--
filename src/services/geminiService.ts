@@ -1,20 +1,36 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis } from "../types";
 
-// ⭐️ [완벽 해결] Vercel 환경 충돌(import.meta 에러)을 완벽하게 피해서 키만 쏙 빼오는 무적의 함수
+console.log("🚀 최신 버전의 GeminiService가 정상 로드되었습니다!"); 
+
+// ⭐️ [완벽 방어] 어떤 환경에서든 API 키를 반드시 찾아내는 초강력 헬퍼 함수
 const getApiKey = () => {
+  let key = "";
+  
+  // 1순위: 브라우저 로컬 스토리지에서 직접 가져오기
   try {
-    const key = localStorage.getItem('gemini_api_key');
-    if (key && key.trim() !== '') {
-      return key.trim();
+    if (typeof window !== 'undefined') {
+      key = localStorage.getItem('gemini_api_key') || "";
     }
-  } catch (e) {
-    console.warn("API 키 로드 중 방어 로직 작동");
+  } catch (e) {}
+
+  // 2순위: window.process.env 에서 찾기 (우리가 App.tsx에서 강제 주입한 값)
+  if (!key) {
+    try {
+      key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || "";
+    } catch (e) {}
   }
-  return "";
+
+  // 3순위: VITE 환경변수에서 찾기
+  if (!key) {
+    try {
+      key = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+    } catch (e) {}
+  }
+
+  return key.trim(); // 공백 제거 후 반환
 };
 
-// [완벽 방어] AI가 JSON 규칙을 어겨도 무조건 데이터를 뜯어내는 만능 파서
 const cleanAndParseJson = (text: string) => {
   if (!text) return null;
   try {
@@ -63,7 +79,7 @@ export const handleApiError = (error: any): string => {
     return "AI Model connection failed (404). Switching to supported model.";
   }
   if (lowerMsg.includes("429") || lowerMsg.includes("quota") || lowerMsg.includes("api key") || lowerMsg.includes("api_key_missing")) {
-    return "API 키가 없거나 일일 한도 초과입니다. 우측 상단의 [API 키 관리]에서 다시 한 번 저장해주세요.";
+    return "API 키가 없거나 올바르지 않습니다. 우측 상단의 [API 키 관리]에서 키를 다시 입력해주세요.";
   }
   if (lowerMsg.includes("503") || lowerMsg.includes("overloaded")) {
     return "Server overloaded (503). Please try again soon.";
@@ -266,17 +282,19 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ [궁극의 해결책] 구글 패키지 버그를 완전히 우회하는 다이렉트 REST API 방식!
+// ⭐️ [가장 핵심] 이미지 생성은 구글 패키지를 완전히 우회하고 서버에 '직접(REST API)' 통신합니다!
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
     const key = getApiKey();
     if (!key) {
-        alert("🚨 API 키를 찾을 수 없습니다! 우측 상단 [API 키 관리] 버튼을 눌러 다시 한 번 저장해주세요.");
+        alert("🚨 브라우저에서 API 키가 인식되지 않았습니다. [API 키 관리] 버튼을 눌러 키를 다시 저장해주세요!");
         throw new Error("API_KEY_MISSING");
     }
 
-    // GoogleGenAI 패키지를 쓰지 않고 구글 서버로 직접 통신합니다. (오류 발생 확률 0%)
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
+    // GoogleGenAI 껍데기를 버리고, 키를 URL 파라미터에 확실하게 박아서 전송합니다.
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`;
+    
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -298,12 +316,12 @@ export const generateImage = async (prompt: string): Promise<string> => {
     const data = await response.json();
     const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
     
-    if (!base64Data) throw new Error("이미지 데이터가 없습니다.");
+    if (!base64Data) throw new Error("이미지 데이터가 비어있습니다.");
     
-    // 캔버스에 즉시 그려질 수 있도록 Base64 원본 텍스트를 그대로 반환합니다.
+    // UI에서 캔버스에 즉시 그려질 수 있도록 Base64 형식을 그대로 돌려줍니다.
     return base64Data;
   } catch (e) {
     console.error("API Call Error: Gemini Image Generation failed.", e);
-    throw e;
+    throw e; // 에러를 위로 던져서 UI에서 잡을 수 있도록 함
   }
 };
