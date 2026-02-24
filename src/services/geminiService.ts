@@ -1,14 +1,18 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis } from "../types";
 
-// ⭐️ [수정됨] Vercel(브라우저) 환경에서 API 키를 안전하게 가져오는 헬퍼 함수
+// ⭐️ [완벽 해결] 3중 방어막으로 API 키를 무조건 찾아내는 헬퍼 함수
 const getApiKey = () => {
-  // 사용자가 UI에서 입력한 키를 우선적으로 가져옵니다.
-  const key = localStorage.getItem('gemini_api_key') || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-  return key;
+  let key = "";
+  try {
+    key = localStorage.getItem('gemini_api_key') || "";
+    if (!key && typeof window !== 'undefined') {
+      key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || "";
+    }
+  } catch (e) {}
+  return key || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
 };
 
-// [완벽 방어] AI가 JSON 규칙을 어겨도 무조건 데이터를 뜯어내는 만능 파서
 const cleanAndParseJson = (text: string) => {
   if (!text) return null;
   try {
@@ -66,7 +70,6 @@ export const handleApiError = (error: any): string => {
   return message.length > 150 ? message.substring(0, 150) + "..." : message;
 };
 
-// Exponential backoff retry logic
 export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 2000): Promise<T> => {
   try {
     return await fn();
@@ -92,7 +95,6 @@ export class GeminiTrendService {
   async fetchTrendsAndAnalysis(keyword: string, modeInstruction: string): Promise<{ news: NewsItem[]; analysis: TrendAnalysis }> {
     try {
       return await withRetry(async () => {
-        // ⭐️ [수정됨] Vercel 환경을 위해 getApiKey() 사용
         const ai = new GoogleGenAI({ apiKey: getApiKey() });
         
         const prompt = `
@@ -182,7 +184,6 @@ export class GeminiTrendService {
 
 export const generateExpandedContent = async (summary: string, type: string, stylePrompt?: string) => {
   try {
-    // ⭐️ [수정됨] getApiKey() 사용
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const prompt = `Create high-quality ${type} content based on this summary: ${summary}. ${stylePrompt ? `Apply style: ${stylePrompt}` : ''} Output only the generated text or JSON as appropriate.`;
     const response = await ai.models.generateContent({
@@ -199,7 +200,6 @@ export const generateExpandedContent = async (summary: string, type: string, sty
 
 export const generateTTS = async (text: string, voiceName: string = 'Zephyr', styleInstruction?: string) => {
   try {
-    // ⭐️ [수정됨] getApiKey() 사용
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const prompt = styleInstruction ? `Say this ${styleInstruction}: ${text}` : text;
     const response = await ai.models.generateContent({
@@ -226,7 +226,6 @@ export const generateVideoWithVeo = async () => null;
 export const generateMindMapData = async (keyword: string) => {
   try {
     return await withRetry(async () => {
-      // ⭐️ [수정됨] getApiKey() 사용
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       
       const prompt = `
@@ -256,7 +255,7 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ [수정됨] 카드뉴스 에러 해결: 잘려있던 이미지 생성 함수에 API 키 로직 연결
+// ⭐️ [카드뉴스 해결 핵심] 무조건 API 키를 가져오도록 연결했습니다.
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
     const key = getApiKey();
