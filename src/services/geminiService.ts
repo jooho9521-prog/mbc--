@@ -256,7 +256,7 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ [핵심 해결 부분] 사용자님 코드에서 잘려있던 이미지 생성 함수를 완벽 복구 및 API 키 연동 처리했습니다!
+// ⭐️ [수정됨] 카드뉴스 에러 해결: 잘려있던 이미지 생성 함수에 API 키 로직 연결
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
     const key = getApiKey();

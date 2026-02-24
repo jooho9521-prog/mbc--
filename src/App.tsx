@@ -3,13 +3,12 @@ import {
   Search, BrainCircuit, Loader2, LayoutDashboard, Zap, Globe, Key, 
   Database, X, Sparkles, MessageSquare, ShieldAlert, Target, TrendingUp, 
   Activity, Share2, Lightbulb, Link2Off, AlertTriangle, Copy, UserCog,
-  ArrowUpDown, Clock, Moon, Sun, Mail // [추가] G메일 버튼용 아이콘
+  ArrowUpDown, Clock, Moon, Sun, Mail 
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
 import { GeminiTrendService, handleApiError, generateExpandedContent } from './services/geminiService';
-// [추가] 방금 만든 gmailService 임포트
 import { initGoogleAuth, getNewsEmails } from './services/gmailService';
 import { AppState, NewsItem } from './types';
 import { NewsCard } from './components/NewsCard';
@@ -94,8 +93,6 @@ const App: React.FC = () => {
   });
 
   const [isTranslating, setIsTranslating] = useState(false);
-
-  // [추가] G메일 API 초기화 상태 관리
   const [isGoogleAuthReady, setIsGoogleAuthReady] = useState(false);
 
   const LANGUAGES = [
@@ -120,14 +117,11 @@ const App: React.FC = () => {
       win.process = win.process || { env: {} };
       win.process.env = win.process.env || {};
       win.process.env.API_KEY = savedKey;
-      
-      // ⭐️ [마법 1] 카드뉴스 AI가 API 키를 무조건 찾도록 환경변수 강제 주입
       win.process.env.GEMINI_API_KEY = savedKey;
       win.process.env.VITE_GEMINI_API_KEY = savedKey;
     }
   }, []);
 
-  // [추가] 컴포넌트 마운트 시 G메일 API 초기화 시도
   useEffect(() => {
     initGoogleAuth().then((success) => {
       setIsGoogleAuthReady(success as boolean);
@@ -146,8 +140,6 @@ const App: React.FC = () => {
       win.process = win.process || { env: {} };
       win.process.env = win.process.env || {};
       win.process.env.API_KEY = trimmedKey;
-      
-      // ⭐️ [마법 2] 키를 저장할 때도 카드뉴스용 환경변수를 즉시 주입
       win.process.env.GEMINI_API_KEY = trimmedKey;
       win.process.env.VITE_GEMINI_API_KEY = trimmedKey;
     }
@@ -191,7 +183,7 @@ const App: React.FC = () => {
     performSearch(state.keyword, selectedMode.prompt);
   }, [state.keyword, selectedMode, selectedPersona]);
 
-  // ⭐️ [마법 3] G메일 데이터를 개별 출처(소스 피드)로 분리하고 맵핑합니다.
+  // ⭐️ [수정됨] G메일 데이터를 배열로 받아와 우측 소스 피드에 매핑합니다.
   const handleGmailSummary = async () => {
     let currentAuthStatus = isGoogleAuthReady;
 
@@ -222,38 +214,39 @@ const App: React.FC = () => {
 
     try {
       showToast("G메일에서 뉴스를 가져오는 중...");
-      // 배열 형태로 이메일 원본 정보들을 가져옵니다.
       const emailData = await getNewsEmails() as any[];
       
       showToast("가져온 뉴스를 분석하는 중...");
       const service = new GeminiTrendService();
       
-      // AI가 출처를 파악할 수 있도록 각 메일의 제목과 출처를 구분하여 프롬프트 전송
       const combinedEmailText = emailData.map((e: any, index: number) => 
-        `[뉴스 ${index + 1}]\n제목: ${e.title}\n출처: ${e.source}\n내용: ${e.body}`
+        `[기사 ${index + 1}]\n제목: ${e.title}\n출처: ${e.source}\n내용: ${e.body}`
       ).join('\n\n');
 
       const finalPrompt = `
         ${selectedPersona.prompt}
-        다음은 사용자의 G메일 '뉴스요약' 라벨에서 가져온 최신 뉴스레터 모음입니다.
-        이 내용들을 종합적으로 분석하여 최신 트렌드를 파악하고 보고서를 작성해주세요.
-        **중요: 분석 결과와 핵심 요약(KeyPoints)을 작성할 때, 어떤 출처(보낸 사람)와 제목의 뉴스에서 나온 내용인지 명확하게 언급해주세요.**
+        다음은 사용자의 구글 알림(뉴스레터)에서 추출한 실제 최신 뉴스 기사 모음입니다.
+        이 기사들을 종합적으로 분석하여 핵심 트렌드 보고서를 작성해주세요.
+        **중요: 분석 결과에 어떤 언론사(출처)의 기사인지 반드시 언급해주세요.**
         
-        [이메일 본문 내용]
+        [뉴스 기사 본문]
         ${combinedEmailText}
       `;
       
       const { analysis } = await service.fetchTrendsAndAnalysis("G메일 뉴스 요약", finalPrompt);
       
-      // ⭐️ 핵심 기능: 가져온 이메일들의 제목, 보낸사람, 원문 링크를 우측 소스 피드 리스트로 매핑!
+      // ⭐️ 추출한 기사들을 소스 피드 카드로 변환
       const mappedSources = emailData.map((e: any) => ({
-          title: `📧 ${e.title.length > 35 ? e.title.substring(0, 35) + '...' : e.title}`,
+          title: `📰 ${e.title.length > 40 ? e.title.substring(0, 40) + '...' : e.title}`,
           uri: e.link || "https://mail.google.com/",
-          source: e.source || "Gmail"
+          source: e.source || "웹 뉴스"
       }));
 
-      setState(prev => ({ ...prev, results: mappedSources, analysis, isLoading: false }));
-      setNewsSources(mappedSources);
+      // 중복된 링크 제거
+      const uniqueSources = Array.from(new Map(mappedSources.map(item => [item.uri, item])).values());
+
+      setState(prev => ({ ...prev, results: uniqueSources, analysis, isLoading: false }));
+      setNewsSources(uniqueSources);
 
     } catch (err: any) {
       setState(prev => ({ ...prev, isLoading: false, error: err.message || "G메일 연동 또는 분석 중 오류가 발생했습니다." }));
@@ -543,7 +536,6 @@ const App: React.FC = () => {
                 </button>
               ))}
               
-              {/* [수정됨] G메일 요약 버튼 (족쇄 해제) */}
               <button
                 onClick={handleGmailSummary}
                 disabled={state.isLoading}
@@ -606,7 +598,6 @@ const App: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* [수정됨] 여론 분석 모드일 때만 여론 감성 분석 차트 표시 */}
                       {selectedMode.id === 'sentiment' && (
                         <div className="mb-8">
                           <SentimentChart 
@@ -627,7 +618,6 @@ const App: React.FC = () => {
                         </div>
                       )}
 
-                      {/* SWOT 모드 UI - 다크모드 대응 */}
                       {selectedMode.id === 'swot' ? (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
                           <div className={`p-8 rounded-[24px] border ${isDarkMode ? 'bg-red-950/20 border-red-900/50' : 'bg-[#FFF5F5] border-red-100'}`}>
@@ -683,7 +673,7 @@ const App: React.FC = () => {
 
                       <div className="no-print">
                         <ContentExpander 
-                          keyword={state.keyword} // [수정됨] 제목 전달용 키워드 추가
+                          keyword={state.keyword} 
                           summary={state.analysis.summary} 
                           expandedData={expandedContent}
                           setExpandedData={setExpandedContent}
