@@ -1,18 +1,13 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis } from "../types";
 
-// ⭐️ [완벽 해결] 3중 방어막으로 API 키를 무조건 찾아내는 헬퍼 함수
+// ⭐️ Vercel(브라우저) 환경에서 API 키를 안전하게 가져오는 헬퍼 함수
 const getApiKey = () => {
-  let key = "";
-  try {
-    key = localStorage.getItem('gemini_api_key') || "";
-    if (!key && typeof window !== 'undefined') {
-      key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || "";
-    }
-  } catch (e) {}
-  return key || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  const key = localStorage.getItem('gemini_api_key') || (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+  return key;
 };
 
+// [완벽 방어] AI가 JSON 규칙을 어겨도 무조건 데이터를 뜯어내는 만능 파서
 const cleanAndParseJson = (text: string) => {
   if (!text) return null;
   try {
@@ -70,6 +65,7 @@ export const handleApiError = (error: any): string => {
   return message.length > 150 ? message.substring(0, 150) + "..." : message;
 };
 
+// Exponential backoff retry logic
 export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 2000): Promise<T> => {
   try {
     return await fn();
@@ -255,23 +251,39 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ [카드뉴스 해결 핵심] 무조건 API 키를 가져오도록 연결했습니다.
+// ⭐️ [궁극의 해결책] 구글 패키지의 브라우저 버그를 피하기 위해, 서버에 직접 fetch(REST API) 요청을 때립니다!
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
     const key = getApiKey();
-    if (!key) throw new Error("An API Key must be set when running in a browser");
+    if (!key) throw new Error("API 키가 없습니다. 우측 상단의 [API 키 관리]에서 다시 입력해주세요.");
 
-    const ai = new GoogleGenAI({ apiKey: key });
-    const response = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-002',
-      prompt: prompt,
-      config: {
-        numberOfImages: 1,
-        outputMimeType: "image/jpeg",
-      }
+    // Google 패키지를 우회하고 가장 확실한 REST API 통신으로 변경
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        instances: [
+          { prompt: prompt }
+        ],
+        parameters: {
+          sampleCount: 1,
+          outputOptions: {
+            mimeType: "image/jpeg"
+          }
+        }
+      })
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || "이미지 생성 서버 오류");
+    }
+
+    const data = await response.json();
+    const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
     
-    const base64Data = response.generatedImages?.[0]?.image?.imageBytes;
     if (!base64Data) throw new Error("이미지 데이터가 없습니다.");
     
     return base64Data;
