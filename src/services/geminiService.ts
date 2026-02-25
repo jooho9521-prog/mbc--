@@ -19,26 +19,26 @@ const cleanAndParseJson = (text: string) => {
     const start = cleanText.indexOf('{');
     const end = cleanText.lastIndexOf('}');
     if (start !== -1 && end !== -1) {
-        cleanText = cleanText.substring(start, end + 1);
+      cleanText = cleanText.substring(start, end + 1);
     }
     return JSON.parse(cleanText);
   } catch (e) {
     console.warn("표준 JSON 파싱 실패! 텍스트 강제 추출을 시도합니다...", text);
     try {
-        const summaryMatch = text.match(/"summary"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"sentiment"|,\s*"keyPoints"|,\s*"growthScore"|,\s*"sources"|\})/i);
-        const sentimentMatch = text.match(/"sentiment"\s*:\s*"([^"]*)"/i);
-        const scoreMatch = text.match(/"growthScore"\s*:\s*(\d+)/i);
-        
-        if (summaryMatch && summaryMatch[1]) {
-            return {
-                summary: summaryMatch[1].trim(),
-                sentiment: sentimentMatch ? sentimentMatch[1] : "neutral",
-                keyPoints: ["AI 분석 데이터 자동 복구됨"],
-                growthScore: scoreMatch ? parseInt(scoreMatch[1]) : 50
-            };
-        }
-    } catch(err) {
-        console.error("강제 추출 실패:", err);
+      const summaryMatch = text.match(/"summary"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"sentiment"|,\s*"keyPoints"|,\s*"growthScore"|,\s*"sources"|\})/i);
+      const sentimentMatch = text.match(/"sentiment"\s*:\s*"([^"]*)"/i);
+      const scoreMatch = text.match(/"growthScore"\s*:\s*(\d+)/i);
+
+      if (summaryMatch && summaryMatch[1]) {
+        return {
+          summary: summaryMatch[1].trim(),
+          sentiment: sentimentMatch ? sentimentMatch[1] : "neutral",
+          keyPoints: ["AI 분석 데이터 자동 복구됨"],
+          growthScore: scoreMatch ? parseInt(scoreMatch[1]) : 50
+        };
+      }
+    } catch (err) {
+      console.error("강제 추출 실패:", err);
     }
     return null;
   }
@@ -55,7 +55,7 @@ export const extractErrorMessage = (error: any): string => {
 export const handleApiError = (error: any): string => {
   const message = extractErrorMessage(error);
   const lowerMsg = message.toLowerCase();
-  
+
   if (lowerMsg.includes("not found") || lowerMsg.includes("404")) {
     return "AI Model connection failed (404). Switching to supported model.";
   }
@@ -65,7 +65,7 @@ export const handleApiError = (error: any): string => {
   if (lowerMsg.includes("503") || lowerMsg.includes("overloaded")) {
     return "현재 구글 서버에 전 세계적인 접속이 폭주하고 있습니다. 잠시 후 시도해주세요.";
   }
-  
+
   return message.length > 150 ? message.substring(0, 150) + "..." : message;
 };
 
@@ -76,14 +76,20 @@ export const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 20
   } catch (error: any) {
     const message = extractErrorMessage(error).toLowerCase();
     const status = error?.status || error?.code;
-    
+
     const isFatal = status === 404 || status === 400 || message.includes("not found");
     if (isFatal) throw error;
 
-    const isTransient = status === 503 || status === 429 || message.includes("503") || message.includes("quota") || message.includes("unavailable");
+    const isTransient =
+      status === 503 ||
+      status === 429 ||
+      message.includes("503") ||
+      message.includes("quota") ||
+      message.includes("unavailable") ||
+      message.includes("overloaded");
 
     if (retries > 0 && isTransient) {
-      console.warn(`[Retry] 구글 서버 혼잡 감지! ${delay/1000}초 후 다시 시도합니다... (남은 횟수: ${retries})`);
+      console.warn(`[Retry] 구글 서버 혼잡 감지! ${delay / 1000}초 후 다시 시도합니다... (남은 횟수: ${retries})`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return withRetry(fn, retries - 1, delay * 2);
     }
@@ -97,9 +103,9 @@ export class GeminiTrendService {
       return await withRetry(async () => {
         const key = getApiKey();
         if (!key) throw new Error("API_KEY_MISSING");
-        
+
         const ai = new GoogleGenAI({ apiKey: key });
-        
+
         const prompt = `
           Analyze the trend for "${keyword}". Context: ${modeInstruction}
           
@@ -117,12 +123,12 @@ export class GeminiTrendService {
             "growthScore": 75
           }
         `;
-        
+
         const response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
           contents: prompt,
-          config: { 
-            tools: [{ googleSearch: {} }] 
+          config: {
+            tools: [{ googleSearch: {} }]
           },
         });
 
@@ -134,18 +140,17 @@ export class GeminiTrendService {
         if (grounding?.groundingChunks) {
           const uniqueLinks = new Set();
           grounding.groundingChunks.forEach((chunk: any) => {
-             const uri = chunk.web?.uri;
-             const title = chunk.web?.title || `관련 기사 원문 확인`;
-             if (uri && uri !== '#' && !uri.includes("google.com/search") && !uniqueLinks.has(uri)) {
-                 uniqueLinks.add(uri);
-                 let sourceName = 'Web News';
-                 try { sourceName = new URL(uri).hostname.replace('www.', ''); } catch(e){}
-                 
-                 news.push({ title, uri, source: sourceName });
-             }
+            const uri = chunk.web?.uri;
+            const title = chunk.web?.title || `관련 기사 원문 확인`;
+            if (uri && uri !== '#' && !uri.includes("google.com/search") && !uniqueLinks.has(uri)) {
+              uniqueLinks.add(uri);
+              let sourceName = 'Web News';
+              try { sourceName = new URL(uri).hostname.replace('www.', ''); } catch (e) { }
+              news.push({ title, uri, source: sourceName });
+            }
           });
         }
-        
+
         const fallbacks = [
           { title: `🔍 '${keyword}' 관련 최신 구글 뉴스`, uri: `https://news.google.com/search?q=${encodeURIComponent(keyword)}`, source: "Google News" },
           { title: `📰 '${keyword}' 네이버 뉴스 상세 검색`, uri: `https://search.naver.com/search.naver?where=news&query=${encodeURIComponent(keyword)}`, source: "Naver News" },
@@ -173,7 +178,12 @@ export class GeminiTrendService {
       console.error("Trend Analysis Error:", e);
       return {
         news: [],
-        analysis: { summary: "1. API 키 오류 또는 구글 서버의 일시적인 트래픽 과부하입니다.\n\n2. 우측 상단의 [API 키 관리] 버튼을 눌러 키가 정확한지 확인해 주세요.", sentiment: "neutral", keyPoints: [], growthScore: 0 }
+        analysis: {
+          summary: "1. API 키 오류 또는 구글 서버의 일시적인 트래픽 과부하입니다.\n\n2. 우측 상단의 [API 키 관리] 버튼을 눌러 키가 정확한지 확인해 주세요.",
+          sentiment: "neutral",
+          keyPoints: [],
+          growthScore: 0
+        }
       };
     }
   }
@@ -194,10 +204,9 @@ export const generateExpandedContent = async (summary: string, type: string, sty
         config: type === 'image' ? { responseMimeType: "application/json" } : {}
       });
       return response.text || "";
-    }, 3, 2000); // 구글 서버가 뻗어도 3번 끈질기게 다시 물어봅니다!
-  } catch (e) { 
+    }, 3, 2000);
+  } catch (e) {
     console.error("Content Expansion Final Error:", e);
-    // ⭐️ 3번 다 실패해도 화면이 죽지 않고 안내 문구가 적힌 예쁜 카드뉴스를 생성합니다.
     if (type === 'image') {
       return JSON.stringify({
         title: "⏳ AI 서버 접속 대기 중",
@@ -241,7 +250,7 @@ export const generateMindMapData = async (keyword: string) => {
       if (!key) throw new Error("API_KEY_MISSING");
 
       const ai = new GoogleGenAI({ apiKey: key });
-      
+
       const prompt = `
         Create a knowledge mind map for "${keyword}". 
         Include a root node named "${keyword}" and 4 detailed sub-branches.
@@ -257,7 +266,7 @@ export const generateMindMapData = async (keyword: string) => {
 
       const text = response.text || "{}";
       const parsed = cleanAndParseJson(text);
-      
+
       if (!parsed) throw new Error("Invalid MindMap data format");
       return parsed;
     });
@@ -267,37 +276,46 @@ export const generateMindMapData = async (keyword: string) => {
   }
 };
 
-// ⭐️ 기존의 다이렉트 통신 방식을 안전하게 유지 (만약의 상황 대비용)
+/**
+ * ✅ [중요] 이미지 생성 함수 전체 수정본
+ * - 기존 REST + 종료된 모델(imagen-3.0...) 제거
+ * - Imagen 4 + JS SDK(generateImages) 사용
+ * - 반환값: 브라우저에서 바로 렌더 가능한 data URL
+ *   (만약 기존 UI가 "base64만" 필요하면 `return b64;`로 바꾸면 됩니다)
+ */
 export const generateImage = async (prompt: string): Promise<string> => {
   try {
-    const key = getApiKey();
-    if (!key) {
+    return await withRetry(async () => {
+      const key = getApiKey();
+      if (!key) {
         alert("🚨 API 키를 찾을 수 없습니다! 우측 상단 [API 키 관리] 버튼을 눌러 다시 한 번 저장해주세요.");
         throw new Error("API_KEY_MISSING");
-    }
+      }
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        instances: [{ prompt: prompt }],
-        parameters: { sampleCount: 1, outputOptions: { mimeType: "image/jpeg" } }
-      })
-    });
+      const ai = new GoogleGenAI({ apiKey: key });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`이미지 생성 서버 오류: ${errorData.error?.message || response.statusText}`);
-    }
+      // ✅ Imagen 4 권장 모델
+      const model = "imagen-4.0-generate-001";
 
-    const data = await response.json();
-    const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
-    
-    if (!base64Data) throw new Error("이미지 데이터가 없습니다.");
-    
-    return base64Data;
-  } catch (e) {
-    console.error("API Call Error: Gemini Image Generation failed.", e);
-    throw e;
+      // ✅ generateImages: base64(imageBytes) 반환
+      const res = await ai.models.generateImages({
+        model,
+        prompt,
+        config: { numberOfImages: 1 },
+      });
+
+      const b64 = res.generatedImages?.[0]?.image?.imageBytes;
+      if (!b64) {
+        // 종종 권한/과금/쿼터 문제면 여기로 떨어집니다.
+        throw new Error("NO_IMAGE_BYTES_FROM_IMAGEN4");
+      }
+
+      // ✅ 브라우저에서 <img src=""> 바로 사용 가능
+      return `data:image/png;base64,${b64}`;
+    }, 3, 2000);
+  } catch (e: any) {
+    console.error("Gemini Image Generation failed.", e);
+    // 사용자가 이해하기 쉬운 메시지로 래핑
+    throw new Error(handleApiError(e));
   }
 };

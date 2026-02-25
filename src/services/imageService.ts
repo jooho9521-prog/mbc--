@@ -1,168 +1,239 @@
-import { GoogleGenAI } from "@google/genai";
-import { withRetry, handleApiError } from "./geminiService";
+import { GoogleGenAI, Modality } from "@google/genai";
 
-// 메모리 캐시: 똑같은 검색어는 서버에 묻지 않고 즉시 띄웁니다.
-const imageCache = new Map<string, string>();
-
-const getApiKey = () => {
+/**
+ * ✅ 브라우저에서 API 키를 최대한 찾아내는 함수 (기존 유지)
+ */
+const getGeminiApiKey = () => {
   let key = "";
-  try { key = localStorage.getItem('gemini_api_key') || ""; } catch (e) {}
-  if (!key) { try { key = (window as any).process?.env?.GEMINI_API_KEY || (window as any).process?.env?.API_KEY || ""; } catch (e) {} }
-  if (!key) { try { key = (import.meta as any).env?.VITE_GEMINI_API_KEY || ""; } catch (e) {} }
+  try { key = localStorage.getItem("gemini_api_key") || ""; } catch (e) {}
+  if (!key) {
+    try {
+      key =
+        (window as any).process?.env?.GEMINI_API_KEY ||
+        (window as any).process?.env?.API_KEY ||
+        "";
+    } catch (e) {}
+  }
+  if (!key) {
+    try { key = (import.meta as any).env?.VITE_GEMINI_API_KEY || ""; } catch (e) {}
+  }
   return key.trim();
 };
 
-// 타임아웃 래퍼
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 25000) => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
-  }
+/**
+ * ✅ 최후 폴백: "절대 안 비는" 기본 썸네일 (SVG data URL)
+ */
+const makeDefaultThumbnailDataUrl = (title: string) => {
+  const safe = (title || "TREND")
+    .slice(0, 24)
+    .replace(/[<>&"]/g, "")
+    .trim() || "TREND";
+
+  const svg = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920">
+    <defs>
+      <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+        <stop offset="0" stop-color="#111827"/>
+        <stop offset="1" stop-color="#0f766e"/>
+      </linearGradient>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="10" stdDeviation="22" flood-opacity="0.28"/>
+      </filter>
+    </defs>
+
+    <rect width="100%" height="100%" fill="url(#g)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="70" y="140" rx="30" ry="30" width="940" height="560" fill="rgba(255,255,255,0.10)"/>
+    </g>
+
+    <text x="110" y="240" font-size="60" fill="white" font-family="Arial, sans-serif" font-weight="700">
+      동아일보 프로젝트 B
+    </text>
+
+    <text x="110" y="340" font-size="42" fill="white" font-family="Arial, sans-serif" opacity="0.92">
+      이미지 생성 실패 (자동 대체)
+    </text>
+
+    <text x="110" y="485" font-size="56" fill="white" font-family="Arial, sans-serif" font-weight="800">
+      ${safe}
+    </text>
+
+    <text x="110" y="585" font-size="30" fill="white" font-family="Arial, sans-serif" opacity="0.8">
+      Gemini/무료 엔진 장애 시 기본 썸네일 표시
+    </text>
+  </svg>`;
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
-// ⭐️ 번역 지능 업그레이드: 애매한 단어는 구체적으로 명시하도록 강제합니다!
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+/**
+ * ✅ (선택) 한국어 → 짧은 영어 키워드 변환 (이미지 생성 안정성 ↑)
+ */
 const translateToEnglishKeyword = async (keyword: string, key: string): Promise<string> => {
   try {
-    if(!key) return "business trend";
+    if (!key) return keyword;
     const ai = new GoogleGenAI({ apiKey: key });
-    const transRes = await ai.models.generateContent({
+
+    const res = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Analyze this text: "${keyword}". Extract the main subject. If it is a brand or company (e.g., Tesla, Apple), append words like 'car', 'product', or 'company headquarters' to make it specific and avoid abstract concepts like lightning or fruit. Translate it into a 2-3 word English keyword. Output ONLY the English words.`,
+      contents:
+        `Translate to English keywords for image generation: "${keyword}". ` +
+        `Return 2-6 English words only. No punctuation. No quotes.`,
     });
-    return transRes.text ? transRes.text.replace(/[^a-zA-Z0-9 ]/g, '').trim() : "business trend";
-  } catch (e) {
-    return "business trend";
+
+    const cleaned = (res.text || "")
+      .replace(/[^a-zA-Z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return cleaned || keyword;
+  } catch {
+    return keyword;
   }
 };
 
 /**
- * 👑 주제 일치도 100% 보장 및 엉뚱한 이미지 원천 차단 로직
+ * ✅ 핵심: Imagen 대신 "Gemini 자체 이미지 생성 모델"로 생성
+ * - AI Studio 키로 동작하는 케이스가 많고,
+ * - 응답에 inlineData(image base64)가 포함됨
  */
-export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string | null> => {
-  const cacheKey = `${prompt}_${stylePrompt || 'default'}`;
-  if (imageCache.has(cacheKey)) {
-    return imageCache.get(cacheKey)!;
+const generateWithGeminiNativeImage = async (prompt: string, apiKey: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey });
+
+  // ✅ 모델 후보 (하나가 막혀도 다음으로)
+  const models = [
+    "gemini-2.5-flash-image",
+    "gemini-3-pro-image-preview",
+  ];
+
+  let lastErr: any = null;
+
+  for (const model of models) {
+    try {
+      const res = await ai.models.generateContent({
+        model,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          // ✅ 이미지 응답 필수
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+        },
+      });
+
+      const parts = res.candidates?.[0]?.content?.parts || [];
+      const imgPart = parts.find((p: any) => p?.inlineData?.data);
+      const b64 = imgPart?.inlineData?.data;
+      const mime = imgPart?.inlineData?.mimeType || "image/png";
+
+      if (!b64) throw new Error("NO_IMAGE_INLINE_DATA");
+
+      return `data:${mime};base64,${b64}`;
+    } catch (e) {
+      lastErr = e;
+      console.warn(`⚠️ Gemini image model failed: ${model}`, e);
+    }
   }
 
-  return withRetry(async () => {
+  throw lastErr || new Error("GEMINI_IMAGE_ALL_MODELS_FAILED");
+};
+
+/**
+ * ✅ 무료 엔진: Pollinations (불안정하지만 무료 AI)
+ */
+const makePollinationsUrl = (prompt: string, seed: number) => {
+  const finalPrompt =
+    `Photorealistic vertical background image only. ` +
+    `Subject: ${prompt}. ` +
+    `Cinematic editorial look, natural lighting, high detail, sharp focus. ` +
+    `NO text, NO logo, NO watermark, NO letters, NO banner, NO frame.`;
+
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=1080&height=1920&nologo=true&seed=${seed}`;
+};
+
+const fetchImageAsDataUrl = async (url: string, timeoutMs = 20000): Promise<string> => {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(url, { signal: controller.signal, mode: "cors" });
+    if (!resp.ok) throw new Error(`HTTP_${resp.status}`);
+
+    const blob = await resp.blob();
+    if (!blob || blob.size < 20000) throw new Error("BLOB_TOO_SMALL");
+
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("FILE_READER_ERROR"));
+      reader.readAsDataURL(blob);
+    });
+
+    return dataUrl;
+  } finally {
+    clearTimeout(t);
+  }
+};
+
+const generateWithPollinationsHardRetry = async (prompt: string, maxAttempts = 12): Promise<string> => {
+  let delay = 1200;
+
+  for (let i = 1; i <= maxAttempts; i++) {
+    const seed = Math.floor(Math.random() * 1_000_000);
+    const url = makePollinationsUrl(prompt, seed);
+
     try {
-      const key = getApiKey();
-      let englishKeyword = prompt;
-      if (key) {
-         englishKeyword = await translateToEnglishKeyword(prompt, key);
-      }
-
-      let base64Result = "";
-
-      // ----------------------------------------------------
-      // [1단계] 구글 Imagen 3 시도
-      // ----------------------------------------------------
-      if (key) {
-        try {
-          const finalPrompt = `A high-quality, cinematic, vertical background image representing ${englishKeyword}. No text, no grids, 4k resolution. ${stylePrompt ? `Style: ${stylePrompt}.` : ''}`;
-          const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${key}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              instances: [{ prompt: finalPrompt }],
-              parameters: { sampleCount: 1, outputOptions: { mimeType: "image/jpeg" } }
-            })
-          }, 10000);
-
-          if (response.ok) {
-            const data = await response.json();
-            const bytes = data.predictions?.[0]?.bytesBase64Encoded;
-            if (bytes) base64Result = `data:image/jpeg;base64,${bytes}`;
-          }
-        } catch (e) {
-          console.warn("1단계 구글 API 실패.");
-        }
-      }
-
-      // ----------------------------------------------------
-      // [2단계] FLUX AI (최상급 고화질, 타임아웃 25초로 넉넉하게 연장!)
-      // ----------------------------------------------------
-      if (!base64Result) {
-        console.log(`🚀 고퀄리티 FLUX AI 시도 중... 확정 키워드: ${englishKeyword}`);
-        try {
-          const fluxPrompt = `Masterpiece, award-winning, stunning 4k vertical background representing ${englishKeyword}. Highly detailed, cinematic lighting, no text, clean composition.`;
-          const randomSeed = Math.floor(Math.random() * 1000000);
-          const fallbackUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fluxPrompt)}?width=1080&height=1920&nologo=true&model=flux&seed=${randomSeed}`;
-          
-          // FLUX는 무거워서 25초를 기다려줍니다.
-          const fallbackResponse = await fetchWithTimeout(fallbackUrl, {}, 25000); 
-          if (fallbackResponse.ok) {
-            const blob = await fallbackResponse.blob();
-            base64Result = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          }
-        } catch (e) {
-          console.warn("2단계 FLUX 지연. 빠른 AI로 전환합니다.");
-        }
-      }
-
-      // ----------------------------------------------------
-      // [3단계] 빠른 무료 AI (FLUX가 너무 오래 걸릴 때 즉시 투입)
-      // ----------------------------------------------------
-      if (!base64Result) {
-         console.log(`🚀 3단계: 기본 AI(Turbo) 시도 중...`);
-         try {
-            const fastPrompt = `Beautiful clean abstract professional vertical background about ${englishKeyword}, no text, 4k`;
-            const fastUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fastPrompt)}?width=1080&height=1920&nologo=true`;
-            const fastResponse = await fetchWithTimeout(fastUrl, {}, 10000);
-            if (fastResponse.ok) {
-                const blob = await fastResponse.blob();
-                base64Result = await new Promise((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onloadend = () => resolve(reader.result as string);
-                  reader.onerror = reject;
-                  reader.readAsDataURL(blob);
-                });
-            }
-         } catch(e) {
-            console.warn("3단계 빠른 AI 실패.");
-         }
-      }
-
-      // ----------------------------------------------------
-      // [4단계] 절대 실패 없는 "고급 뉴스룸 배경" (이상한 사진 완전 차단!)
-      // ----------------------------------------------------
-      if (!base64Result) {
-         console.log(`🚀 4단계: 절대 실패 없는 고급 다크블루 추상화 배경 생성`);
-         // 번개나 시계탑 같은 복불복 요소를 아예 배제하고, 무조건 깔끔한 다크 톤 배경을 깔아줍니다.
-         const safeUrl = `https://image.pollinations.ai/prompt/dark%20blue%20abstract%20gradient%20corporate%20background%20vertical?width=1080&height=1920&nologo=true`;
-         const safeResponse = await fetchWithTimeout(safeUrl, {}, 10000);
-         const safeBlob = await safeResponse.blob();
-         base64Result = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(safeBlob);
-         });
-      }
-
-      if (!base64Result) throw new Error("모든 이미지 연동 실패");
-
-      imageCache.set(cacheKey, base64Result);
-      return base64Result;
-
-    } catch (error: any) {
-      console.error("최종 이미지 생성 실패.", error);
-      throw new Error("이미지 서버 트래픽 폭주 중입니다. 잠시 후 시도해주세요.");
+      console.log(`🟡 Pollinations attempt ${i}/${maxAttempts}`);
+      const dataUrl = await fetchImageAsDataUrl(url, 20000);
+      console.log("🟢 Pollinations success");
+      return dataUrl;
+    } catch (e: any) {
+      console.warn(`🔴 Pollinations failed (${i}/${maxAttempts}):`, String(e?.message || e));
+      await sleep(delay);
+      delay = Math.min(delay * 1.8, 12000);
     }
-  });
+  }
+
+  throw new Error("POLLINATIONS_ALL_ATTEMPTS_FAILED");
 };
 
-export const generateVideoFromImage = async (imageBase64: string, prompt: string): Promise<string | null> => {
-  return null;
+/**
+ * ✅ 최종 함수
+ * 1) Gemini(이미지 가능한 모델)로 생성 → 성공하면 dataURL 반환
+ * 2) 실패하면 Pollinations(무료) 재시도 → dataURL 반환
+ * 3) 그래도 실패하면 기본 썸네일 dataURL
+ */
+export const generateImage = async (prompt: string, stylePrompt?: string): Promise<string> => {
+  const geminiKey = getGeminiApiKey();
+  if (!prompt || !prompt.trim()) return makeDefaultThumbnailDataUrl("EMPTY");
+
+  const englishKeyword = geminiKey ? await translateToEnglishKeyword(prompt, geminiKey) : prompt;
+
+  // ✅ 프롬프트를 "배경 이미지용"으로 정리
+  const finalPrompt =
+    `${englishKeyword}. ${stylePrompt || ""} `.trim() +
+    ` Clean composition, background only, no text, no logo, no watermark, no banner, no frame.`;
+
+  // 1) ✅ Gemini native image generation (가장 우선)
+  if (geminiKey) {
+    try {
+      const dataUrl = await generateWithGeminiNativeImage(finalPrompt, geminiKey);
+      console.log("✅ Gemini native image success");
+      return dataUrl;
+    } catch (e: any) {
+      console.warn("⚠️ Gemini native image failed → Pollinations fallback", e?.message || e);
+    }
+  }
+
+  // 2) Pollinations hard retry
+  try {
+    const dataUrl = await generateWithPollinationsHardRetry(finalPrompt, 12);
+    return dataUrl;
+  } catch (e) {
+    console.warn("⚠️ Pollinations failed → default thumbnail", e);
+    return makeDefaultThumbnailDataUrl(prompt);
+  }
 };
+
+export const generateVideoFromImage = async () => null;

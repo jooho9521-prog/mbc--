@@ -39,13 +39,96 @@ const FONT_OPTIONS = [
   { name: '카페24 써라운드', family: "'Cafe24Ssurround', sans-serif" }
 ];
 
-const CardNewsGenerator: React.FC<Props> = ({ 
-  imageUrl, 
-  summary, 
-  headline, 
-  onHeadlineChange, 
-  onSummaryChange, 
-  isRegeneratingImage, 
+// ✅ 컴포넌트 내부 "무적" 기본 썸네일(SVG data URL)
+// - 외부 이미지가 전부 실패해도 카드가 빈 화면이 되지 않음
+const makeDefaultThumbnailDataUrl = (title: string) => {
+  const safe = (title || "TREND").slice(0, 24).replace(/[<>&"]/g, "").trim() || "TREND";
+  const svg = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920">
+    <defs>
+      <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+        <stop offset="0" stop-color="#111827"/>
+        <stop offset="1" stop-color="#0f766e"/>
+      </linearGradient>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="10" stdDeviation="22" flood-opacity="0.28"/>
+      </filter>
+    </defs>
+
+    <rect width="100%" height="100%" fill="url(#g)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="70" y="140" rx="30" ry="30" width="940" height="560" fill="rgba(255,255,255,0.10)"/>
+    </g>
+
+    <text x="110" y="240" font-size="60" fill="white" font-family="Arial, sans-serif" font-weight="700">
+      동아일보 프로젝트 B
+    </text>
+
+    <text x="110" y="340" font-size="42" fill="white" font-family="Arial, sans-serif" opacity="0.92">
+      이미지 생성 실패 (자동 대체)
+    </text>
+
+    <text x="110" y="485" font-size="56" fill="white" font-family="Arial, sans-serif" font-weight="800">
+      ${safe}
+    </text>
+
+    <text x="110" y="585" font-size="30" fill="white" font-family="Arial, sans-serif" opacity="0.8">
+      네트워크/권한 오류 시 기본 썸네일 표시
+    </text>
+
+    <g opacity="0.22">
+      <circle cx="960" cy="1680" r="260" fill="white"/>
+      <circle cx="860" cy="1600" r="140" fill="white"/>
+    </g>
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+};
+
+// ✅ 외부 URL 이미지를 "가능하면" dataURL로 바꿔서 캔버스 taint(저장/다운로드 실패)를 줄임
+// - CORS가 허용되면 성공
+// - 안되면 원본 URL로 시도하고, 그것도 실패하면 기본 썸네일로 확정
+const tryResolveToDataUrl = async (url: string, timeoutMs = 12000): Promise<string | null> => {
+  if (!url) return null;
+  // 이미 dataURL이면 그대로
+  if (url.startsWith("data:image/")) return url;
+
+  // blob: URL은 그대로 사용(대개 정상)
+  if (url.startsWith("blob:")) return url;
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    // CORS가 허용되면 blob으로 받아 dataURL로 만들 수 있음 → 저장/다운로드 안정성↑
+    const resp = await fetch(url, { signal: controller.signal, mode: "cors" });
+    if (!resp.ok) return null;
+
+    const blob = await resp.blob();
+    if (!blob || blob.size < 1000) return null;
+
+    const dataUrl: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("FILE_READER_ERROR"));
+      reader.readAsDataURL(blob);
+    });
+
+    return dataUrl;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+};
+
+const CardNewsGenerator: React.FC<Props> = ({
+  imageUrl,
+  summary,
+  headline,
+  onHeadlineChange,
+  onSummaryChange,
+  isRegeneratingImage,
   onShowToast,
   selectedCategory,
   setSelectedCategory,
@@ -65,16 +148,20 @@ const CardNewsGenerator: React.FC<Props> = ({
   const [bodyText, setBodyText] = useState("");
   const [headlineText, setHeadlineText] = useState("");
 
+  // ✅ 실제 캔버스에 그릴 "확정 이미지 소스"
+  // - imageUrl이 깨져도 여기엔 항상 유효한 값이 들어가게 함
+  const [resolvedImageSrc, setResolvedImageSrc] = useState<string>("");
+
   // Sync headline
   useEffect(() => {
-    setHeadlineText(headline || ""); 
+    setHeadlineText(headline || "");
   }, [headline]);
 
   // Sync body text
   useEffect(() => {
     if (summary) {
       const formattedText = summary
-        .replace(/(\d+\.\s)/g, '\n\n$1') 
+        .replace(/(\d+\.\s)/g, '\n\n$1')
         .replace(/\(출처.*?\)/g, '')
         .replace(/\[.*?\]/g, '')
         .trim();
@@ -90,6 +177,36 @@ const CardNewsGenerator: React.FC<Props> = ({
     }
   }, [headlineText, isPromptEdited]);
 
+  // ✅ imageUrl이 바뀔 때마다: 1) dataURL 변환 시도 2) 안되면 원본 URL 3) 그래도 안되면 기본 썸네일
+  useEffect(() => {
+    let alive = true;
+
+    const doResolve = async () => {
+      const fallback = makeDefaultThumbnailDataUrl(headlineText || "TREND");
+
+      if (!imageUrl || !imageUrl.trim()) {
+        if (alive) setResolvedImageSrc(fallback);
+        return;
+      }
+
+      // 1) dataURL 변환(가능한 경우)
+      const maybeDataUrl = await tryResolveToDataUrl(imageUrl, 12000);
+      if (!alive) return;
+
+      if (maybeDataUrl) {
+        setResolvedImageSrc(maybeDataUrl);
+        return;
+      }
+
+      // 2) fetch가 막히면(=CORS) 원본 URL로라도 시도
+      setResolvedImageSrc(imageUrl);
+    };
+
+    doResolve();
+
+    return () => { alive = false; };
+  }, [imageUrl, headlineText]);
+
   const drawTextWithWrap = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
     if (!text) return y;
 
@@ -97,7 +214,6 @@ const CardNewsGenerator: React.FC<Props> = ({
     let currentY = y;
 
     paragraphs.forEach(paragraph => {
-      // Reduce spacing for empty lines
       if (!paragraph.trim()) {
         currentY += lineHeight * 0.4;
         return;
@@ -105,12 +221,12 @@ const CardNewsGenerator: React.FC<Props> = ({
 
       const words = paragraph.split(' ');
       let line = '';
-      
+
       for (let n = 0; n < words.length; n++) {
         const testLine = line + words[n] + ' ';
         const metrics = ctx.measureText(testLine);
         const testWidth = metrics.width;
-        
+
         if (testWidth > maxWidth && n > 0) {
           ctx.fillText(line, x, currentY);
           line = words[n] + ' ';
@@ -122,31 +238,39 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.fillText(line, x, currentY);
       currentY += lineHeight;
     });
-    
+
     return currentY;
   };
 
-  const drawCardNewsOnCanvas = () => {
+  const drawCardNewsOnCanvas = (srcToDraw: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const img = new Image();
-    img.crossOrigin = "anonymous"; 
-    img.src = imageUrl;
 
-    img.onload = () => {
+    // ✅ [표시 안정화 핵심]
+    // - dataURL(내부 생성 이미지)일 때만 crossOrigin을 건다
+    // - 외부 URL에 crossOrigin을 걸면(특히 CORS 헤더 없는 경우) 로드 실패/빈칸이 잦아짐
+    if (srcToDraw && srcToDraw.startsWith("data:image/")) {
+      img.crossOrigin = "anonymous";
+    }
+
+    img.decoding = "async";
+    img.src = srcToDraw || makeDefaultThumbnailDataUrl(headlineText || "TREND");
+
+    const render = (image: HTMLImageElement) => {
       canvas.width = 1080;
       canvas.height = 1920;
-      
-      const baseScale = Math.max(canvas.width / img.width, canvas.height / img.height);
-      const dw = img.width * baseScale;
-      const dh = img.height * baseScale;
-      
+
+      const baseScale = Math.max(canvas.width / image.width, canvas.height / image.height);
+      const dw = image.width * baseScale;
+      const dh = image.height * baseScale;
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
-      
+      ctx.drawImage(image, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+
       const gradient = ctx.createLinearGradient(0, 0, 0, 1920);
       gradient.addColorStop(0, 'rgba(0,0,0,0.3)');
       gradient.addColorStop(0.4, 'rgba(0,0,0,0.6)');
@@ -156,16 +280,15 @@ const CardNewsGenerator: React.FC<Props> = ({
 
       ctx.fillStyle = 'white';
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'top'; 
+      ctx.textBaseline = 'top';
       const maxWidth = 880;
       const startX = 100;
 
       // Draw Headline
       ctx.font = `bold ${headlineSize}px ${selectedFont}`;
       const displayHeadline = (headlineText || "제목 없음").replace(/[\*\#\[\]]/g, "").trim();
-      
-      // Start headline slightly higher
-      let currentY = 220; 
+
+      let currentY = 220;
       currentY = drawTextWithWrap(ctx, displayHeadline, startX, currentY, maxWidth, headlineSize * 1.3);
 
       ctx.fillStyle = '#0071e3';
@@ -174,39 +297,55 @@ const CardNewsGenerator: React.FC<Props> = ({
       // Draw Body
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.font = `500 ${bodySize}px ${selectedFont}`;
-      
-      // Adjust body start position
+
       currentY += 60;
-      
+
       const displayBody = bodyText || "내용이 없습니다.";
-      // Adjusted line height for 35px font
       drawTextWithWrap(ctx, displayBody, startX, currentY, maxWidth, bodySize * 1.35);
 
       // Draw Watermark
       ctx.font = `bold 28px ${selectedFont}`;
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
       ctx.fillText(localWatermark || "TrendPulse OSMU Intelligent Engine", startX, 1840);
-      
+
       ctx.textAlign = 'right';
       ctx.fillText(new Date().toLocaleDateString('ko-KR'), 1080 - startX, 1840);
+    };
+
+    img.onload = () => {
+      render(img);
+    };
+
+    img.onerror = () => {
+      // ✅ 무적: 이미지 로드 실패 시 기본 썸네일로 재시도 후 렌더
+      const fallbackImg = new Image();
+      fallbackImg.crossOrigin = "anonymous";
+      fallbackImg.src = makeDefaultThumbnailDataUrl(headlineText || "TREND");
+      fallbackImg.onload = () => render(fallbackImg);
     };
   };
 
   useEffect(() => {
-    if (imageUrl) {
-      const timer = setTimeout(() => {
-        drawCardNewsOnCanvas();
-      }, 50); 
-      return () => clearTimeout(timer);
-    }
-  }, [imageUrl, headlineText, bodyText, localWatermark, headlineSize, bodySize, selectedFont]);
+    const src = resolvedImageSrc || makeDefaultThumbnailDataUrl(headlineText || "TREND");
+
+    const timer = setTimeout(() => {
+      drawCardNewsOnCanvas(src);
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [resolvedImageSrc, headlineText, bodyText, localWatermark, headlineSize, bodySize, selectedFont]);
 
   const handleDownload = () => {
     if (!canvasRef.current) return;
-    const link = document.createElement('a');
-    link.download = `TrendPulse_Card_${Date.now()}.png`;
-    link.href = canvasRef.current.toDataURL('image/png', 1.0);
-    link.click();
+    try {
+      const link = document.createElement('a');
+      link.download = `TrendPulse_Card_${Date.now()}.png`;
+      link.href = canvasRef.current.toDataURL('image/png', 1.0);
+      link.click();
+    } catch (e) {
+      console.error(e);
+      alert("이미지 소스(CORS) 문제로 PNG 저장이 제한되었습니다. 잠시 후 다시 시도하거나 '스타일링 적용하기'로 이미지를 재생성해주세요.");
+    }
   };
 
   const handleSaveToLibrary = () => {
@@ -227,7 +366,7 @@ const CardNewsGenerator: React.FC<Props> = ({
       if (onShowToast) onShowToast("보관함 저장 완료");
     } catch (e) {
       console.error(e);
-      alert("브라우저 저장소 용량이 부족하거나 오류가 발생했습니다.");
+      alert("브라우저 저장소 용량이 부족하거나, 이미지 소스(CORS) 문제로 저장이 제한되었습니다.\n다시 시도하거나 이미지를 재생성해주세요.");
     }
   };
 
@@ -260,18 +399,18 @@ const CardNewsGenerator: React.FC<Props> = ({
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2"><Edit3 size={14} /> 헤드라인 텍스트</label>
               <span className="text-[10px] font-bold text-[#0071e3]">SIZE: {headlineSize}px</span>
             </div>
-            <input 
-              type="text" 
-              value={headlineText} 
+            <input
+              type="text"
+              value={headlineText}
               onChange={(e) => {
                 setHeadlineText(e.target.value);
                 onHeadlineChange(e.target.value);
-              }} 
-              className="w-full bg-gray-50 p-4 rounded-2xl border-none text-gray-900 font-bold text-lg focus:ring-2 focus:ring-[#0071e3]/20 outline-none" 
+              }}
+              className="w-full bg-gray-50 p-4 rounded-2xl border-none text-gray-900 font-bold text-lg focus:ring-2 focus:ring-[#0071e3]/20 outline-none"
               placeholder="헤드라인을 입력하세요"
             />
-            <input 
-              type="range" min="20" max="150" value={headlineSize} 
+            <input
+              type="range" min="20" max="150" value={headlineSize}
               onChange={(e) => setHeadlineSize(parseInt(e.target.value))}
               className="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-[#0071e3]"
             />
@@ -282,18 +421,18 @@ const CardNewsGenerator: React.FC<Props> = ({
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2"><Edit3 size={14} /> 본문 요약 내용</label>
               <span className="text-[10px] font-bold text-[#0071e3]">SIZE: {bodySize}px</span>
             </div>
-            <textarea 
-              value={bodyText} 
+            <textarea
+              value={bodyText}
               onChange={(e) => {
                 const val = e.target.value;
                 setBodyText(val);
                 onSummaryChange(val);
-              }} 
-              className="w-full h-40 p-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#0071e3]/20 whitespace-pre-wrap outline-none resize-none bg-gray-50 text-gray-700 text-sm leading-relaxed" 
+              }}
+              className="w-full h-40 p-4 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#0071e3]/20 whitespace-pre-wrap outline-none resize-none bg-gray-50 text-gray-700 text-sm leading-relaxed"
               placeholder="본문 내용을 입력하세요..."
             />
-            <input 
-              type="range" min="10" max="80" value={bodySize} 
+            <input
+              type="range" min="10" max="80" value={bodySize}
               onChange={(e) => setBodySize(parseInt(e.target.value))}
               className="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-[#0071e3]"
             />
@@ -302,13 +441,13 @@ const CardNewsGenerator: React.FC<Props> = ({
 
         <div className="bg-gray-50 rounded-[32px] p-8 space-y-8">
           <h4 className="text-sm font-bold text-gray-900 flex items-center gap-2"><Palette size={18} className="text-[#0071e3]" /> 상세 스타일링</h4>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="space-y-3">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">폰트 페이스</label>
-              <select 
-                value={selectedFont} 
-                onChange={(e) => setSelectedFont(e.target.value)} 
+              <select
+                value={selectedFont}
+                onChange={(e) => setSelectedFont(e.target.value)}
                 className="w-full bg-white rounded-xl p-3 text-sm focus:ring-2 focus:ring-[#0071e3]/20 border-none outline-none shadow-sm font-medium"
               >
                 {FONT_OPTIONS.map(f => <option key={f.family} value={f.family}>{f.name}</option>)}
@@ -316,12 +455,12 @@ const CardNewsGenerator: React.FC<Props> = ({
             </div>
             <div className="space-y-3">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">워터마크 텍스트</label>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder="입력 시 하단에 표시됩니다"
-                value={localWatermark} 
-                onChange={(e) => setLocalWatermark(e.target.value)} 
-                className="w-full bg-white p-3 rounded-xl border-none text-gray-600 text-sm outline-none shadow-sm" 
+                value={localWatermark}
+                onChange={(e) => setLocalWatermark(e.target.value)}
+                className="w-full bg-white p-3 rounded-xl border-none text-gray-600 text-sm outline-none shadow-sm"
               />
             </div>
           </div>
@@ -329,19 +468,19 @@ const CardNewsGenerator: React.FC<Props> = ({
           <div className="space-y-4 pt-4 border-t border-gray-200">
             <div className="flex justify-between items-center">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">배경 이미지 AI 프롬프트</label>
-              <button 
-                onClick={() => onRegenerate(customPrompt)} 
-                disabled={isRegeneratingImage} 
+              <button
+                onClick={() => onRegenerate(customPrompt)}
+                disabled={isRegeneratingImage}
                 className="text-[10px] font-black text-[#0071e3] flex items-center gap-2 hover:bg-[#0071e3]/5 px-3 py-1.5 rounded-full transition-all disabled:opacity-50"
               >
-                <RefreshCw size={12} className={isRegeneratingImage ? 'animate-spin' : ''} /> 
+                <RefreshCw size={12} className={isRegeneratingImage ? 'animate-spin' : ''} />
                 스타일링 적용하기
               </button>
             </div>
-            <textarea 
-              value={customPrompt} 
-              onChange={(e) => { setCustomPrompt(e.target.value); setIsPromptEdited(true); }} 
-              className="w-full h-24 bg-white p-4 rounded-2xl border-none text-gray-700 text-xs leading-relaxed focus:ring-2 focus:ring-[#0071e3]/20 outline-none resize-none shadow-sm" 
+            <textarea
+              value={customPrompt}
+              onChange={(e) => { setCustomPrompt(e.target.value); setIsPromptEdited(true); }}
+              className="w-full h-24 bg-white p-4 rounded-2xl border-none text-gray-700 text-xs leading-relaxed focus:ring-2 focus:ring-[#0071e3]/20 outline-none resize-none shadow-sm"
               placeholder="원하는 배경 이미지를 영어로 묘사해보세요..."
             />
           </div>
