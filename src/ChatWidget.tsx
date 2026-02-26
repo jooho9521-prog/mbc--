@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   MessageSquare, X, Send, Bot, User, Sparkles, 
@@ -224,19 +223,90 @@ const ChatWidget: React.FC<Props> = ({ analysis, keyword, externalCommand }) => 
     }
   };
 
+  // ✅ [추가] 모델이 줄글로 답해도 1~5 번호/줄바꿈으로 강제 정리
+  const formatAssistantAnswer = (text: string) => {
+    if (!text) return text;
+
+    // 기본 정리
+    let t = text
+      .replace(/\r\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .trim();
+
+    // 이미 번호 목록이 있으면: 번호 앞 줄바꿈 보정
+    const hasNumbering = /(^|\n)\s*1\.\s/.test(t);
+    if (hasNumbering) {
+      t = t
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/(\n|^)\s*(\d+)\.\s*/g, (m, p1, num) => `${p1}${num}. `);
+      // 번호 사이에 빈줄 넣기(가독성)
+      t = t.replace(/\n(\d+\.)/g, '\n\n$1').replace(/\n{3,}/g, '\n\n').trim();
+      return t;
+    }
+
+    // 줄바꿈이 거의 없고 너무 긴 경우: 문장 단위로 잘라 1~5로 재구성
+    const tooLongOneParagraph = t.length > 160 && !t.includes('\n');
+    if (tooLongOneParagraph) {
+      // 한국어/영문 문장 분리(최대한 보수적으로)
+      const sentences = t
+        .split(/(?<=[.!?])\s+|(?<=다\.)\s+|(?<=니다\.)\s+|(?<=요\.)\s+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      const picked = sentences.slice(0, 5);
+      if (picked.length >= 2) {
+        return picked.map((s, i) => `${i + 1}. ${s}`).join('\n\n').trim();
+      }
+
+      // 문장 분리가 실패하면 길이 기준으로 5등분
+      const chunks: string[] = [];
+      const target = Math.ceil(t.length / 5);
+      for (let i = 0; i < 5; i++) {
+        const start = i * target;
+        const end = Math.min((i + 1) * target, t.length);
+        const chunk = t.slice(start, end).trim();
+        if (chunk) chunks.push(chunk);
+      }
+      return chunks.slice(0, 5).map((c, i) => `${i + 1}. ${c}`).join('\n\n').trim();
+    }
+
+    // 그 외: 적당히 문단만 정리
+    return t.replace(/\n{3,}/g, '\n\n').trim();
+  };
+
   const requestAI = async (text: string) => {
     try {
       let prompt = `사용자 질문: "${text}"\n\n`;
       if (analysis) {
         prompt += `[현재 분석 리포트 컨텍스트]\n키워드: ${keyword}\n요약: ${analysis.summary}\n핵심 포인트: ${analysis.keyPoints.join(', ')}\n\n`;
-        prompt += `위 분석 내용을 바탕으로 사용자의 질문에 답변해줘. 답변에 출처 링크나 URL을 절대 포함하지 마. 핵심 내용만 줄글로 답변해줘.`;
+        prompt += `
+위 분석 내용을 바탕으로 사용자의 질문에 답변해줘.
+
+[출력 규칙 - 매우 중요]
+- 답변은 반드시 "1. ~ 5." 번호 목록 형태로 작성 (총 5개)
+- 각 항목은 1~2문장, 간결하게
+- 각 번호 항목 사이에 줄바꿈(빈 줄) 포함해서 가독성 좋게
+- 출처 링크나 URL을 절대 포함하지 마
+- 불필요한 서론/마무리 인사 없이 핵심만
+`;
       } else {
-        prompt += `아직 분석 리포트가 생성되지 않았습니다. 일반적인 트렌드 전문가로서 답변해줘.`;
+        prompt += `
+아직 분석 리포트가 생성되지 않았습니다. 일반적인 트렌드 전문가로서 답변해줘.
+
+[출력 규칙 - 매우 중요]
+- 답변은 반드시 "1. ~ 5." 번호 목록 형태로 작성 (총 5개)
+- 각 항목은 1~2문장, 간결하게
+- 각 번호 항목 사이에 줄바꿈(빈 줄) 포함해서 가독성 좋게
+- 출처 링크나 URL을 절대 포함하지 마
+- 불필요한 서론/마무리 인사 없이 핵심만
+`;
       }
 
       // Fix: Now uses the updated generateExpandedContent which supports 3 arguments
       const response = await generateExpandedContent(prompt, 'sns', '');
-      setMessages(prev => [...prev, { role: 'assistant', text: response }]);
+      const formatted = formatAssistantAnswer(response);
+
+      setMessages(prev => [...prev, { role: 'assistant', text: formatted }]);
       
       if (keyword) {
         setSuggestions([
@@ -370,8 +440,7 @@ const ChatWidget: React.FC<Props> = ({ analysis, keyword, externalCommand }) => 
 
             {!isLoading && suggestions.length > 0 && (
               <div 
-                className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2"
-                style={{ marginTop: '100px' }} // [유지] 간격 고정
+                className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 mt-4"
               >
                 <p className="text-xs font-bold text-gray-400 ml-1">추천 질문</p>
                 {suggestions.map((sug, idx) => (
