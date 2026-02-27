@@ -1,10 +1,4 @@
-import React, {
-  useState,
-  useEffect,
-  useRef,
-  useCallback,
-  useMemo,
-} from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { generateExpandedContent, generateTTS } from "../services/geminiService";
 import { generateImage } from "../services/imageService";
 import CardNewsGenerator from "./CardNewsGenerator";
@@ -25,6 +19,12 @@ import {
   Wand2,
   Activity,
   Wand,
+  Copy,
+  BookmarkPlus,
+  BookmarkCheck,
+  RefreshCcw,
+  FileText,
+  ImageDown,
 } from "lucide-react";
 
 interface Props {
@@ -75,67 +75,9 @@ const cleanHeadline = (text: string) => {
 
 const STOPWORDS = new Set([
   // KR
-  "관련",
-  "속보",
-  "단독",
-  "분석",
-  "전망",
-  "가능",
-  "논란",
-  "사실",
-  "이유",
-  "결과",
-  "기자",
-  "뉴스",
-  "기사",
-  "내용",
-  "이번",
-  "오늘",
-  "최근",
-  "지난",
-  "대한",
-  "에서",
-  "으로",
-  "그리고",
-  "있다",
-  "했다",
-  "한다",
-  "된다",
-  "하는",
-  "하며",
-  "부터",
-  "까지",
-  "등",
-  "및",
+  "관련","속보","단독","분석","전망","가능","논란","사실","이유","결과","기자","뉴스","기사","내용","이번","오늘","최근","지난","대한","에서","으로","그리고","있다","했다","한다","된다","하는","하며","부터","까지","등","및",
   // EN
-  "the",
-  "a",
-  "an",
-  "and",
-  "or",
-  "to",
-  "of",
-  "in",
-  "on",
-  "for",
-  "with",
-  "from",
-  "as",
-  "at",
-  "by",
-  "is",
-  "are",
-  "was",
-  "were",
-  "be",
-  "been",
-  "being",
-  "this",
-  "that",
-  "these",
-  "those",
-  "it",
-  "its",
+  "the","a","an","and","or","to","of","in","on","for","with","from","as","at","by","is","are","was","were","be","been","being","this","that","these","those","it","its",
 ]);
 
 const normalizeForKeywords = (t: string) =>
@@ -155,7 +97,6 @@ const extractTopKeywords = (headline: string, body: string, max = 6) => {
     .filter((w) => !STOPWORDS.has(w.toLowerCase()));
 
   const freq = new Map<string, number>();
-
   const headText = normalizeForKeywords(headline);
   const headSet = new Set(headText.split(" ").filter(Boolean));
 
@@ -173,35 +114,28 @@ const extractTopKeywords = (headline: string, body: string, max = 6) => {
 
 const pickOne = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
 
-/** ---------- Enterprise prompt (Apple minimal brief tone) ---------- **/
+/** ---------- Enterprise prompt ---------- **/
 
-// ✅ placeholder (고정값 X) : keyword + summary 기반, 기업용 브리프 말투
 const buildAppleMinimalPlaceholder = (keyword?: string, summary?: string) => {
   const k = (keyword || "").trim();
   const s = cleanAndFormatText(summary || "");
 
-  // seed가 없으면 “애플 미니멀 브리프 스타일” 기본 예시
-  if (!k && !s) {
-    return `예) “애플 미니멀 브리프 스타일”`;
-  }
+  if (!k && !s) return `예) “애플 미니멀 브리프 스타일”`;
 
   const seed = k || "핵심 이슈";
   const kws = extractTopKeywords(seed, s || seed, 6).filter((x) => x && x !== "news");
   const uniq = Array.from(new Set(kws)).slice(0, 4);
 
-  // 너무 구어체/불필요 단어 제거
-  const ban = new Set(["있습니다", "입니다", "합니다", "하세요", "테스트", "뉴스", "기사"]);
+  const ban = new Set(["있습니다","입니다","합니다","하세요","테스트","뉴스","기사"]);
   const filtered = uniq.filter((x) => !ban.has(x));
 
   const a = filtered[0] || "시장 구조";
   const b = filtered[1] || "핵심 변수";
   const c = filtered[2] || "리스크/기회";
 
-  // ✅ 한 줄 예시(브리프 톤)
   return `예) “${seed}: ${a} 변화와 ${b}가 의미하는 전략” / “${seed}: ${c} 시나리오와 우선순위 액션”`;
 };
 
-// ✅ 추천 프롬프트(기업용 3종) : 싸구려 말투 금지, 고급 편집/브랜딩 톤
 const buildEnterprisePromptSuggestions = (seed: string, context: string) => {
   const s = (seed || "주제").trim();
   const kws = extractTopKeywords(s, context, 8).slice(0, 6);
@@ -217,7 +151,6 @@ const buildEnterprisePromptSuggestions = (seed: string, context: string) => {
   ];
 };
 
-// ✅ 실제 이미지 생성에 들어갈 “강화 프롬프트”
 const buildEnhancedImagePrompt = (headline: string, contextBody: string, manualPrompt?: string) => {
   const h = cleanHeadline(headline || "");
   const body = cleanAndFormatText(contextBody || "");
@@ -378,6 +311,27 @@ const IMAGE_STYLES = [
   { id: 30, label: "유튜브 배너", prompt: "YouTube banner, clean layout, tech style" },
 ];
 
+/** ---------- Local Storage: Prompt Favorites ---------- **/
+
+const LS_FAV_KEY = "trendpulse_prompt_favorites_v1";
+
+const readFavs = (): string[] => {
+  try {
+    const raw = localStorage.getItem(LS_FAV_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.map((x) => String(x)) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeFavs = (arr: string[]) => {
+  try {
+    localStorage.setItem(LS_FAV_KEY, JSON.stringify(arr.slice(0, 30)));
+  } catch {}
+};
+
 /** ---------- Component ---------- **/
 
 const ContentExpander: React.FC<Props> = ({
@@ -392,6 +346,7 @@ const ContentExpander: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const [isRegeneratingImage, setIsRegeneratingImage] = useState(false);
   const [isGeneratingTitle, setIsGeneratingTitle] = useState(false);
+  const [isRewritingBody, setIsRewritingBody] = useState(false);
 
   const [cardHeadline, setCardHeadline] = useState("");
   const [cardSummary, setCardSummary] = useState(summary || "분석된 내용이 없습니다.");
@@ -399,13 +354,16 @@ const ContentExpander: React.FC<Props> = ({
     "https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=1080&auto=format&fit=crop"
   );
 
-  // ✅ 통합 프롬프트: 기본값 주입 금지(테스트 문구 금지)
+  // ✅ 통합 프롬프트
   const [unifiedPrompt, setUnifiedPrompt] = useState<string>("");
 
   // ✅ 스타일 선택
-  const [selectedCategory, setSelectedCategory] = useState("auto"); // 기본: 자동
-  const [selectedStyleId, setSelectedStyleId] = useState<number>(0); // 0 = 자동(스타일 강제 없음)
+  const [selectedCategory, setSelectedCategory] = useState("auto");
+  const [selectedStyleId, setSelectedStyleId] = useState<number>(0);
   const isAutoMode = selectedCategory === "auto";
+
+  // ✅ 프롬프트 즐겨찾기
+  const [favPrompts, setFavPrompts] = useState<string[]>(() => readFavs());
 
   // ✅ TTS
   const [selectedGoogleVoice, setSelectedGoogleVoice] = useState("Zephyr");
@@ -415,11 +373,9 @@ const ContentExpander: React.FC<Props> = ({
   const [playbackRate, setPlaybackRate] = useState(1.0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ✅ 초고화질 suffix (프롬프트 기반, UI에 ‘고퀄’ 문구 노출 X)
   const qualitySuffix =
     ", ultra high resolution, premium, photorealistic, high clarity, sharp focus, clean details, cinematic lighting, HDR, professional photography, minimal composition";
 
-  // ✅ 컨텍스트
   const enterpriseContext = useMemo(() => {
     const k = (keyword || "").trim();
     const h = (cardHeadline || "").trim();
@@ -428,18 +384,13 @@ const ContentExpander: React.FC<Props> = ({
     return [k, h, s, cs].filter(Boolean).join(" ");
   }, [keyword, cardHeadline, summary, cardSummary]);
 
-  // ✅ 기업용 placeholder (고정값 X)
-  const dynamicPlaceholder = useMemo(() => {
-    return buildAppleMinimalPlaceholder(keyword, summary);
-  }, [keyword, summary]);
+  const dynamicPlaceholder = useMemo(() => buildAppleMinimalPlaceholder(keyword, summary), [keyword, summary]);
 
-  // ✅ 추천 프롬프트(기업용 3개)
   const promptSuggestions = useMemo(() => {
     const seed = (keyword || cardHeadline || unifiedPrompt || "애플 미니멀 브리프 스타일").trim();
     return buildEnterprisePromptSuggestions(seed, enterpriseContext);
   }, [keyword, cardHeadline, unifiedPrompt, enterpriseContext]);
 
-  // ✅ 카드뉴스 텍스트 생성 프롬프트(기업용 톤)
   const cardTextPrompt = useMemo(() => {
     return `
 Task: Create a card news summary in KOREAN for enterprise usage.
@@ -460,21 +411,56 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
 `.trim();
   }, []);
 
+  /** ✅ summary 변경시 카드 요약 업데이트 + (필요 시) 제목 자동 생성 */
   useEffect(() => {
     if (summary && summary !== cardSummary) {
       setCardSummary(summary);
-      if (!expandedData.image) {
-        handleGenerateTitleOnly();
+
+      // 이미지가 이미 만들어져 있는데 제목이 비어있으면 자동 생성
+      if (expandedData.image && !expandedData.image.cardData?.title) {
+        void handleGenerateTitleOnly(true);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary]);
 
-  const handleGenerateTitleOnly = async () => {
+  /** ✅ [핵심 FIX] AI 제목 추천: card state + expandedData.image.cardData 동시 업데이트 */
+  const applyCardTextToState = useCallback(
+    (title: string, body: string) => {
+      const t = cleanHeadline(title);
+      const b = cleanAndFormatText(body);
+
+      setCardHeadline(t);
+      setCardSummary(b);
+
+      // ✅ 화면에 실제로 렌더되는 expandedData도 함께 업데이트해야 “반응 없음” 문제가 해결됩니다.
+      setExpandedData((prev) => {
+        if (!prev.image) return prev;
+        return {
+          ...prev,
+          image: {
+            ...prev.image,
+            cardData: {
+              title: t,
+              body: b,
+            },
+          },
+        };
+      });
+    },
+    [setExpandedData]
+  );
+
+  /** ✅ 제목만(또는 제목+본문) 생성: silent 옵션 */
+  const handleGenerateTitleOnly = async (silent?: boolean) => {
     if (isGeneratingTitle || !summary) return;
+
     setIsGeneratingTitle(true);
+    if (!silent) onShowToast("✍️ AI가 제목/본문을 다듬는 중...");
     try {
-      const rawResponse = await generateExpandedContent(summary, "card", cardTextPrompt);
+      // ✅ generateExpandedContent에 summary + cardTextPrompt를 안정적으로 전달
+      const baseContext = `키워드: ${keyword || ""}\n요약:\n${summary}`;
+      const rawResponse = await generateExpandedContent(baseContext, "card", cardTextPrompt);
 
       let newTitle = "";
       let newBody = "";
@@ -503,15 +489,54 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
       }
       if (!newBody || newBody.length < 10) newBody = summary;
 
-      setCardHeadline(newTitle);
-      setCardSummary(newBody);
+      applyCardTextToState(newTitle, newBody);
+      if (!silent) onShowToast("✅ 제목/본문 반영 완료");
     } catch (e) {
       console.error("Title Gen Error:", e);
-      const fallbackTitle = cleanHeadline(summary.split(/[.!?\n]/)[0]);
-      setCardHeadline(fallbackTitle);
-      setCardSummary(summary);
+      if (!silent) onShowToast("⚠️ 제목 추천 실패 (서버 혼잡/응답 형식 오류)");
     } finally {
       setIsGeneratingTitle(false);
+    }
+  };
+
+  /** ✅ (추가) 본문만 리라이트 */
+  const handleRewriteBodyOnly = async () => {
+    if (isRewritingBody || !summary) return;
+    setIsRewritingBody(true);
+    onShowToast("🧾 AI가 본문을 리라이트 중...");
+    try {
+      const context = `
+키워드: ${keyword || ""}
+현재 제목: ${expandedData.image?.cardData?.title || cardHeadline || ""}
+현재 본문:
+${expandedData.image?.cardData?.body || cardSummary || summary}
+
+요청: 위 본문을 기업용(뉴스룸) 톤으로 더 간결하게 다듬고,
+반드시 1~5번 개조식 한 줄 포맷을 유지해줘.
+`.trim();
+
+      const prompt = `
+You are an enterprise newsroom editor.
+Rewrite BODY only in KOREAN.
+
+Rules:
+- Keep EXACTLY 5 numbered bullet points (1. to 5.)
+- One line per bullet (no wrapping)
+- No URLs, no emoticons, no casual speech
+- Output ONLY the body text (no [HEADLINE], no extra labels)
+`.trim();
+
+      const raw = await generateExpandedContent(context, "card", prompt);
+      const cleaned = cleanAndFormatText(raw);
+
+      const titleToKeep = expandedData.image?.cardData?.title || cardHeadline || cleanHeadline(summary.split(/[.!?\n]/)[0]);
+      applyCardTextToState(titleToKeep, cleaned || (expandedData.image?.cardData?.body || cardSummary));
+      onShowToast("✅ 본문 리라이트 완료");
+    } catch (e) {
+      console.error(e);
+      onShowToast("❌ 본문 리라이트 실패");
+    } finally {
+      setIsRewritingBody(false);
     }
   };
 
@@ -522,6 +547,7 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
     return cleaned;
   };
 
+  /** ✅ video 탭: 스크립트 자동 채우기 */
   useEffect(() => {
     if (activeTab === "video") {
       let formattedText = "";
@@ -557,7 +583,7 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    onShowToast("오디오 저장 완료");
+    onShowToast("✅ 오디오 저장 완료");
   };
 
   const handleTTS = useCallback(async () => {
@@ -591,22 +617,64 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
           setIsSpeaking(true);
         };
       }
+      onShowToast("✅ 보이스 생성 완료");
     } catch (err) {
       console.error("TTS Error:", err);
-      onShowToast("음성 생성 오류");
+      onShowToast("❌ 음성 생성 오류");
     } finally {
       setLoading(false);
     }
-  }, [
-    expandedData.video,
-    isSpeaking,
-    selectedGoogleVoice,
-    selectedStylePresetId,
-    playbackRate,
-    onShowToast,
-  ]);
+  }, [expandedData.video, isSpeaking, selectedGoogleVoice, selectedStylePresetId, playbackRate, onShowToast]);
 
-  // ✅ 공통 생성: “프롬프트로 이미지 생성” == “카드뉴스 제작 시작” 동일 파이프라인
+  /** ✅ 카드 텍스트 복사(추가) */
+  const copyCardText = async () => {
+    const t = expandedData.image?.cardData?.title || cardHeadline || "";
+    const b = expandedData.image?.cardData?.body || cardSummary || "";
+    const payload = `[제목]\n${t}\n\n[본문]\n${b}`.trim();
+    if (!payload) return;
+    try {
+      await navigator.clipboard.writeText(payload);
+      onShowToast("✅ 카드 텍스트 복사 완료");
+    } catch {
+      onShowToast("❌ 복사 실패 (권한 확인)");
+    }
+  };
+
+  /** ✅ 이미지 다운로드(추가) */
+  const downloadCardImage = () => {
+    const img = expandedData.image?.img || cardImage;
+    if (!img) return;
+    const a = document.createElement("a");
+    a.href = img;
+    a.download = `card_image_${Date.now()}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    onShowToast("✅ 이미지 다운로드 완료");
+  };
+
+  /** ✅ 즐겨찾기 토글(추가) */
+  const isFav = useMemo(() => {
+    const p = (unifiedPrompt || "").trim();
+    if (!p) return false;
+    return favPrompts.includes(p);
+  }, [unifiedPrompt, favPrompts]);
+
+  const toggleFavorite = () => {
+    const p = (unifiedPrompt || "").trim();
+    if (!p) {
+      onShowToast("프롬프트가 비어 있습니다.");
+      return;
+    }
+    setFavPrompts((prev) => {
+      const next = prev.includes(p) ? prev.filter((x) => x !== p) : [p, ...prev];
+      writeFavs(next);
+      return next;
+    });
+    onShowToast(isFav ? "즐겨찾기 해제" : "✅ 즐겨찾기 저장");
+  };
+
+  /** ✅ 공통 생성 파이프라인(이미지+텍스트) */
   const generateCardFromPrompt = async (toastMsg: string) => {
     if (loading) return;
     setLoading(true);
@@ -648,15 +716,14 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
       if (!newBody || newBody.length < 10) newBody = summary || baseContext;
 
       // 2) 이미지 생성
-      const stylePrompt = isAutoMode
-        ? ""
-        : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
-
+      const stylePrompt = isAutoMode ? "" : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
       const enhancedStylePrompt = `${stylePrompt}${qualitySuffix}`;
       const imgContext = buildEnhancedImagePrompt(newTitle, baseContext, manual);
 
+      // imageService 시그니처가 (prompt, stylePrompt)라고 가정
       const imgData = await generateImage(imgContext, enhancedStylePrompt);
 
+      // 상태 반영
       setCardHeadline(newTitle);
       setCardSummary(newBody);
       if (imgData) setCardImage(imgData);
@@ -678,6 +745,7 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
     }
   };
 
+  /** ✅ 이미지만 재생성 */
   const handleRegenerateImageOnly = async () => {
     if (isRegeneratingImage || !expandedData.image) return;
     setIsRegeneratingImage(true);
@@ -688,9 +756,7 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
         ? `키워드: ${keyword || ""}\n요약:\n${summary}\n\n사용자 프롬프트:\n${manual || ""}`
         : `사용자 프롬프트:\n${manual || ""}`;
 
-      const stylePrompt = isAutoMode
-        ? ""
-        : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
+      const stylePrompt = isAutoMode ? "" : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
       const enhancedStylePrompt = `${stylePrompt}${qualitySuffix}`;
 
       const variationPrompt = buildEnhancedImagePrompt(
@@ -789,25 +855,23 @@ ${summary}
         {/* 카드뉴스 */}
         {activeTab === "card" && (
           <div className="space-y-10 animate-in fade-in duration-300">
-            {/* ✅ 생성 후에도 “콘텐츠 시각화 디자인” 유지 */}
             <div className="bg-white rounded-[32px] p-12 border border-gray-100 shadow-sm text-center space-y-8">
               <div className="w-20 h-20 bg-[#F5F5F7] rounded-[24px] flex items-center justify-center mx-auto">
                 <Palette size={36} className="text-[#0071e3]" />
               </div>
               <div className="space-y-2">
-                <h4 className="text-2xl font-black text-gray-900">
-                  콘텐츠 시각화 디자인
-                </h4>
+                <h4 className="text-2xl font-black text-gray-900">콘텐츠 시각화 디자인</h4>
                 <p className="text-gray-500 text-sm font-medium">
                   테마를 선택하거나 프롬프트를 입력하면, 카드뉴스 제작과 동일한 방식으로 자동 생성합니다.
                 </p>
               </div>
 
-              {/* ✅ 통합 프롬프트 */}
+              {/* 통합 프롬프트 */}
               <div className="space-y-3 max-w-3xl mx-auto text-left">
                 <label className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
                   이미지 프롬프트 (통합 입력)
                 </label>
+
                 <textarea
                   value={unifiedPrompt}
                   onChange={(e) => setUnifiedPrompt(e.target.value)}
@@ -815,30 +879,74 @@ ${summary}
                   className="w-full min-h-[88px] bg-gray-50 p-5 rounded-[20px] border border-gray-100 text-gray-800 text-sm leading-relaxed focus:ring-2 focus:ring-[#0071e3]/10 outline-none resize-none"
                 />
 
-                <div className="flex gap-2 justify-end">
+                <div className="flex flex-wrap gap-2 justify-end">
                   <button
                     onClick={() => setUnifiedPrompt("")}
                     className="px-4 py-2 rounded-full bg-white border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-all"
                   >
                     프롬프트 지우기
                   </button>
+
+                  <button
+                    onClick={toggleFavorite}
+                    className={`px-4 py-2 rounded-full border text-xs font-bold transition-all flex items-center gap-2 ${
+                      isFav
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                        : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                    }`}
+                    title="프롬프트 즐겨찾기 저장/해제"
+                  >
+                    {isFav ? <BookmarkCheck size={14} /> : <BookmarkPlus size={14} />}
+                    즐겨찾기
+                  </button>
+
                   <button
                     onClick={() => generateCardFromPrompt("✅ 프롬프트 기반 생성 완료")}
                     disabled={loading}
                     className="px-5 py-2 rounded-full bg-[#0071e3] text-white text-xs font-bold shadow-lg hover:bg-[#0077ed] transition-all disabled:opacity-50 flex items-center gap-2"
                     title="카드뉴스 제작과 동일하게 생성"
                   >
-                    {loading ? (
-                      <Loader2 className="animate-spin" size={14} />
-                    ) : (
-                      <Wand size={14} />
-                    )}
+                    {loading ? <Loader2 className="animate-spin" size={14} /> : <Wand size={14} />}
                     프롬프트로 이미지 생성
                   </button>
                 </div>
+
+                {/* 즐겨찾기 목록 */}
+                {favPrompts.length ? (
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
+                        즐겨찾기 프롬프트
+                      </p>
+                      <button
+                        onClick={() => {
+                          setFavPrompts([]);
+                          writeFavs([]);
+                          onShowToast("즐겨찾기 전체 삭제");
+                        }}
+                        className="text-[11px] font-black text-gray-400 hover:text-gray-600"
+                        title="전체 삭제"
+                      >
+                        비우기
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {favPrompts.slice(0, 6).map((p, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setUnifiedPrompt(p)}
+                          className="px-3 py-3 rounded-2xl text-left text-xs font-semibold border bg-white border-gray-100 text-gray-600 hover:border-gray-300 hover:bg-gray-50 transition-all"
+                          title="클릭하면 프롬프트에 적용"
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
-              {/* ✅ 카테고리 */}
+              {/* 카테고리 */}
               <div className="space-y-6 max-w-2xl mx-auto">
                 <div className="flex flex-wrap gap-2 justify-center">
                   {IMAGE_STYLE_CATEGORIES_LOCAL.map((cat) => (
@@ -847,10 +955,8 @@ ${summary}
                       onClick={() => {
                         setSelectedCategory(cat.id);
                         if (cat.id === "auto") {
-                          // ✅ 자동 선택 시 스타일 강제 해제
                           setSelectedStyleId(0);
                         } else {
-                          // 자동이 아닌 카테고리로 바꾸면 기본 스타일 하나 선택
                           if (selectedStyleId === 0) setSelectedStyleId(cat.range[0]);
                         }
                       }}
@@ -865,18 +971,11 @@ ${summary}
                   ))}
                 </div>
 
-                {/* ✅ 자동 모드면 스타일 리스트 비활성/숨김 */}
                 {!isAutoMode && (
                   <div className="flex flex-wrap gap-2 justify-center max-h-40 overflow-y-auto p-4 bg-gray-50 rounded-[20px] border border-gray-100 custom-scrollbar-report">
                     {IMAGE_STYLES.filter((style) => {
-                      const cat = IMAGE_STYLE_CATEGORIES_LOCAL.find(
-                        (c) => c.id === selectedCategory
-                      );
-                      return (
-                        cat &&
-                        style.id >= cat.range[0] &&
-                        style.id <= cat.range[1]
-                      );
+                      const cat = IMAGE_STYLE_CATEGORIES_LOCAL.find((c) => c.id === selectedCategory);
+                      return cat && style.id >= cat.range[0] && style.id <= cat.range[1];
                     }).map((style) => (
                       <button
                         key={style.id}
@@ -893,11 +992,11 @@ ${summary}
                   </div>
                 )}
 
-                {isAutoMode && (
+                {isAutoMode ? (
                   <div className="text-xs text-gray-400 font-semibold">
                     자동 모드에서는 그림체를 강제하지 않습니다. 프롬프트/요약 기반으로 최적의 결과를 생성합니다.
                   </div>
-                )}
+                ) : null}
               </div>
 
               <button
@@ -905,16 +1004,10 @@ ${summary}
                 disabled={loading}
                 className="w-full max-sm mx-auto py-5 bg-gray-900 hover:bg-black text-white rounded-full font-bold text-base shadow-xl flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50"
               >
-                {loading ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <>
-                    <Sparkles size={20} /> 카드뉴스 제작 시작
-                  </>
-                )}
+                {loading ? <Loader2 className="animate-spin" /> : (<><Sparkles size={20} /> 카드뉴스 제작 시작</>)}
               </button>
 
-              {/* ✅ 추천 프롬프트 (기업용) */}
+              {/* 추천 프롬프트 */}
               <div className="max-w-3xl mx-auto text-left pt-2">
                 <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">
                   추천 프롬프트 (기업용)
@@ -934,31 +1027,74 @@ ${summary}
               </div>
             </div>
 
-            {/* ✅ 생성 결과(이미지 2개 나오던 문제는 이 파일에서 “1개만 렌더”로 유지) */}
+            {/* 생성 결과 */}
             {expandedData.image && (
               <div className="bg-gray-50 rounded-[32px] p-10 border border-gray-100 relative">
-                <div className="absolute top-6 right-6 z-10 flex gap-2">
+                <div className="absolute top-6 right-6 z-10 flex flex-wrap gap-2">
+                  {/* ✅ AI 제목 추천(수정: expandedData까지 업데이트) */}
                   <button
-                    onClick={handleGenerateTitleOnly}
+                    onClick={() => handleGenerateTitleOnly(false)}
                     disabled={isGeneratingTitle}
                     className="bg-white hover:bg-gray-50 text-[#0071e3] px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                    title="제목/본문을 기업용 톤으로 재정리"
                   >
                     <Wand2 size={14} className={isGeneratingTitle ? "animate-spin" : ""} />
                     {isGeneratingTitle ? "제목 작성 중..." : "AI 제목 추천"}
                   </button>
 
+                  {/* ✅ 본문 리라이트(추가) */}
+                  <button
+                    onClick={handleRewriteBodyOnly}
+                    disabled={isRewritingBody}
+                    className="bg-white hover:bg-gray-50 text-gray-800 px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                    title="본문만 더 간결하게 리라이트"
+                  >
+                    {isRewritingBody ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                    본문 리라이트
+                  </button>
+
+                  {/* ✅ 이미지 재생성 */}
                   <button
                     onClick={handleRegenerateImageOnly}
                     disabled={isRegeneratingImage}
                     className="bg-white hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
                     title="현재 카드 내용 유지하고 이미지만 다시 생성"
                   >
-                    {isRegeneratingImage ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Wand size={14} />
-                    )}
+                    {isRegeneratingImage ? <Loader2 size={14} className="animate-spin" /> : <Wand size={14} />}
                     AI 재생성
+                  </button>
+
+                  {/* ✅ 카드 텍스트 복사(추가) */}
+                  <button
+                    onClick={copyCardText}
+                    className="bg-white hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95"
+                    title="카드 제목/본문을 텍스트로 복사"
+                  >
+                    <Copy size={14} />
+                    텍스트 복사
+                  </button>
+
+                  {/* ✅ 이미지 다운로드(추가) */}
+                  <button
+                    onClick={downloadCardImage}
+                    className="bg-white hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95"
+                    title="생성된 이미지를 PNG로 다운로드"
+                  >
+                    <ImageDown size={14} />
+                    이미지 저장
+                  </button>
+
+                  {/* ✅ 빠른 리셋(추가) */}
+                  <button
+                    onClick={() => {
+                      setUnifiedPrompt("");
+                      onShowToast("입력값 초기화");
+                    }}
+                    className="bg-white hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-full text-xs font-bold shadow-md border border-gray-100 flex items-center gap-2 transition-all active:scale-95"
+                    title="프롬프트 입력 초기화"
+                  >
+                    <RefreshCcw size={14} />
+                    초기화
                   </button>
                 </div>
 
@@ -969,28 +1105,10 @@ ${summary}
                   isRegeneratingImage={isRegeneratingImage}
                   onShowToast={onShowToast}
                   onHeadlineChange={(val) => {
-                    setCardHeadline(val);
-                    setExpandedData((prev) => ({
-                      ...prev,
-                      image: prev.image
-                        ? {
-                            ...prev.image,
-                            cardData: { ...prev.image.cardData, title: val },
-                          }
-                        : null,
-                    }));
+                    applyCardTextToState(val, expandedData.image?.cardData?.body || cardSummary);
                   }}
                   onSummaryChange={(val) => {
-                    setCardSummary(val);
-                    setExpandedData((prev) => ({
-                      ...prev,
-                      image: prev.image
-                        ? {
-                            ...prev.image,
-                            cardData: { ...prev.image.cardData, body: val },
-                          }
-                        : null,
-                    }));
+                    applyCardTextToState(expandedData.image?.cardData?.title || cardHeadline, val);
                   }}
                   selectedCategory={selectedCategory}
                   setSelectedCategory={(cat) => {
@@ -1046,18 +1164,10 @@ ${summary}
                           <User size={24} />
                         </div>
                         <div className="text-left min-w-0 overflow-hidden">
-                          <p
-                            className={`font-bold text-base truncate ${
-                              selectedGoogleVoice === v.id ? "text-white" : "text-gray-900"
-                            }`}
-                          >
+                          <p className={`font-bold text-base truncate ${selectedGoogleVoice === v.id ? "text-white" : "text-gray-900"}`}>
                             {v.label}
                           </p>
-                          <p
-                            className={`text-sm truncate ${
-                              selectedGoogleVoice === v.id ? "text-white/80" : "text-gray-500"
-                            }`}
-                          >
+                          <p className={`text-sm truncate ${selectedGoogleVoice === v.id ? "text-white/80" : "text-gray-500"}`}>
                             {v.desc}
                           </p>
                         </div>
@@ -1167,7 +1277,7 @@ ${summary}
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(expandedData.sns || "");
-                    onShowToast("복사 완료!");
+                    onShowToast("✅ 복사 완료!");
                   }}
                   className="mt-8 w-full py-4 bg-gray-50 hover:bg-gray-100 text-gray-900 rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all"
                 >

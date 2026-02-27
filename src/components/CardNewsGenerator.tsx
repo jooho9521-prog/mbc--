@@ -40,7 +40,6 @@ const FONT_OPTIONS = [
 ];
 
 // ✅ 컴포넌트 내부 "무적" 기본 썸네일(SVG data URL)
-// - 외부 이미지가 전부 실패해도 카드가 빈 화면이 되지 않음
 const makeDefaultThumbnailDataUrl = (title: string) => {
   const safe = (title || "TREND").slice(0, 24).replace(/[<>&"]/g, "").trim() || "TREND";
   const svg = `
@@ -85,22 +84,16 @@ const makeDefaultThumbnailDataUrl = (title: string) => {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
-// ✅ 외부 URL 이미지를 "가능하면" dataURL로 바꿔서 캔버스 taint(저장/다운로드 실패)를 줄임
-// - CORS가 허용되면 성공
-// - 안되면 원본 URL로 시도하고, 그것도 실패하면 기본 썸네일로 확정
+// ✅ 외부 URL 이미지를 dataURL로 바꿔서 캔버스 taint(저장/다운로드 실패)를 줄임
 const tryResolveToDataUrl = async (url: string, timeoutMs = 12000): Promise<string | null> => {
   if (!url) return null;
-  // 이미 dataURL이면 그대로
   if (url.startsWith("data:image/")) return url;
-
-  // blob: URL은 그대로 사용(대개 정상)
   if (url.startsWith("blob:")) return url;
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    // CORS가 허용되면 blob으로 받아 dataURL로 만들 수 있음 → 저장/다운로드 안정성↑
     const resp = await fetch(url, { signal: controller.signal, mode: "cors" });
     if (!resp.ok) return null;
 
@@ -139,25 +132,19 @@ const CardNewsGenerator: React.FC<Props> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [localWatermark, setLocalWatermark] = useState('');
   const [headlineSize, setHeadlineSize] = useState(80);
-  const [bodySize, setBodySize] = useState(35); // 35px maintained
+  const [bodySize, setBodySize] = useState(35);
   const [selectedFont, setSelectedFont] = useState(FONT_OPTIONS[0].family);
   const [customPrompt, setCustomPrompt] = useState("");
   const [isPromptEdited, setIsPromptEdited] = useState(false);
 
-  // Internal state management
   const [bodyText, setBodyText] = useState("");
   const [headlineText, setHeadlineText] = useState("");
-
-  // ✅ 실제 캔버스에 그릴 "확정 이미지 소스"
-  // - imageUrl이 깨져도 여기엔 항상 유효한 값이 들어가게 함
   const [resolvedImageSrc, setResolvedImageSrc] = useState<string>("");
 
-  // Sync headline
   useEffect(() => {
     setHeadlineText(headline || "");
   }, [headline]);
 
-  // Sync body text
   useEffect(() => {
     if (summary) {
       const formattedText = summary
@@ -177,7 +164,6 @@ const CardNewsGenerator: React.FC<Props> = ({
     }
   }, [headlineText, isPromptEdited]);
 
-  // ✅ imageUrl이 바뀔 때마다: 1) dataURL 변환 시도 2) 안되면 원본 URL 3) 그래도 안되면 기본 썸네일
   useEffect(() => {
     let alive = true;
 
@@ -189,7 +175,6 @@ const CardNewsGenerator: React.FC<Props> = ({
         return;
       }
 
-      // 1) dataURL 변환(가능한 경우)
       const maybeDataUrl = await tryResolveToDataUrl(imageUrl, 12000);
       if (!alive) return;
 
@@ -198,16 +183,21 @@ const CardNewsGenerator: React.FC<Props> = ({
         return;
       }
 
-      // 2) fetch가 막히면(=CORS) 원본 URL로라도 시도
       setResolvedImageSrc(imageUrl);
     };
 
     doResolve();
-
     return () => { alive = false; };
   }, [imageUrl, headlineText]);
 
-  const drawTextWithWrap = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
+  const drawTextWithWrap = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    lineHeight: number
+  ) => {
     if (!text) return y;
 
     const paragraphs = text.split('\n');
@@ -250,9 +240,6 @@ const CardNewsGenerator: React.FC<Props> = ({
 
     const img = new Image();
 
-    // ✅ [표시 안정화 핵심]
-    // - dataURL(내부 생성 이미지)일 때만 crossOrigin을 건다
-    // - 외부 URL에 crossOrigin을 걸면(특히 CORS 헤더 없는 경우) 로드 실패/빈칸이 잦아짐
     if (srcToDraw && srcToDraw.startsWith("data:image/")) {
       img.crossOrigin = "anonymous";
     }
@@ -271,10 +258,18 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
 
+      /**
+       * ✅ 블러 강도가 세게 느껴지는 핵심이 "오버레이가 너무 진함" 이었습니다.
+       * - 기존: 0.3 / 0.6 / 0.95 (상당히 어두움)
+       * - 개선: 0.22 / 0.42 / 0.75 (이미지 더 잘 보임)
+       *
+       * Tailwind의 backdrop-blur-sm은 DOM에 적용되는 것이고,
+       * 현재는 canvas 렌더링이므로 "투명도/그라데이션"으로 체감 블러를 낮춥니다.
+       */
       const gradient = ctx.createLinearGradient(0, 0, 0, 1920);
-      gradient.addColorStop(0, 'rgba(0,0,0,0.3)');
-      gradient.addColorStop(0.4, 'rgba(0,0,0,0.6)');
-      gradient.addColorStop(1, 'rgba(0,0,0,0.95)');
+      gradient.addColorStop(0, 'rgba(0,0,0,0.22)');  // ✅ from-black/35 느낌(완화)
+      gradient.addColorStop(0.4, 'rgba(0,0,0,0.42)');
+      gradient.addColorStop(1, 'rgba(0,0,0,0.75)'); // ✅ to-black/75 정도
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, 1080, 1920);
 
@@ -284,7 +279,6 @@ const CardNewsGenerator: React.FC<Props> = ({
       const maxWidth = 880;
       const startX = 100;
 
-      // Draw Headline
       ctx.font = `bold ${headlineSize}px ${selectedFont}`;
       const displayHeadline = (headlineText || "제목 없음").replace(/[\*\#\[\]]/g, "").trim();
 
@@ -294,16 +288,13 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.fillStyle = '#0071e3';
       ctx.fillRect(startX, currentY + 30, 150, 8);
 
-      // Draw Body
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
       ctx.font = `500 ${bodySize}px ${selectedFont}`;
 
       currentY += 60;
-
       const displayBody = bodyText || "내용이 없습니다.";
       drawTextWithWrap(ctx, displayBody, startX, currentY, maxWidth, bodySize * 1.35);
 
-      // Draw Watermark
       ctx.font = `bold 28px ${selectedFont}`;
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
       ctx.fillText(localWatermark || "TrendPulse OSMU Intelligent Engine", startX, 1840);
@@ -312,12 +303,9 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.fillText(new Date().toLocaleDateString('ko-KR'), 1080 - startX, 1840);
     };
 
-    img.onload = () => {
-      render(img);
-    };
+    img.onload = () => render(img);
 
     img.onerror = () => {
-      // ✅ 무적: 이미지 로드 실패 시 기본 썸네일로 재시도 후 렌더
       const fallbackImg = new Image();
       fallbackImg.crossOrigin = "anonymous";
       fallbackImg.src = makeDefaultThumbnailDataUrl(headlineText || "TREND");
@@ -327,7 +315,6 @@ const CardNewsGenerator: React.FC<Props> = ({
 
   useEffect(() => {
     const src = resolvedImageSrc || makeDefaultThumbnailDataUrl(headlineText || "TREND");
-
     const timer = setTimeout(() => {
       drawCardNewsOnCanvas(src);
     }, 50);

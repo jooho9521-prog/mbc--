@@ -20,43 +20,72 @@ const DISCOVERY_DOC =
 
 export interface GmailNewsItem {
   title: string;
-  body: string; // 기사별 snippet(가능하면) + fallback 메일 텍스트 일부
+  body: string;
   link: string;
   source: string;
-  // [추가] 내부 정렬/디버깅용(필요하면 UI에서도 활용 가능)
   score?: number;
-  publishedAt?: string; // 메일/본문에서 추정한 날짜(선택)
+  publishedAt?: string;
+}
+
+/** -----------------------------
+ *  Blocklist (요청사항)
+ *  ✅ 유튜브/틱톡/소셜 도메인 차단
+ * ------------------------------ */
+const BLOCKED_DOMAINS = [
+  "tiktok.com",
+  "youtube.com",
+  "youtu.be",
+  "instagram.com",
+  "facebook.com",
+  "x.com",
+  "twitter.com",
+  "threads.net",
+  "reddit.com",
+  "discord.com",
+  "discord.gg",
+  "t.me",
+];
+
+const BLOCKED_URL_KEYWORDS = [
+  "google.com/alerts",
+  "unsubscribe",
+  "preferences",
+  "accounts.google",
+  "support.google",
+  "policies.google",
+  "myaccount.google",
+  "mail.google.com",
+];
+
+function isBlockedDomain(url: string) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    return BLOCKED_DOMAINS.some((d) => host === d || host.endsWith("." + d));
+  } catch {
+    return false;
+  }
+}
+
+function isBlockedByKeyword(url: string) {
+  const lower = (url || "").toLowerCase();
+  return BLOCKED_URL_KEYWORDS.some((k) => lower.includes(k));
 }
 
 /** -----------------------------
  *  Settings (front-only)
- *  - 필요하면 UI에서 주입 가능하게 확장하세요.
  * ------------------------------ */
 const DEFAULT_CONFIG = {
-  // 라벨 이름(정확히 일치 권장). 공백 무시 비교는 하되, contains는 지양.
   preferredLabelName: "뉴스요약",
-
-  // Gmail 검색 쿼리: 라벨 못 찾거나 라벨 미사용 시 fallback에 사용
-  // Google Alerts 발신자(환경에 따라 다를 수 있어 OR로 넓게)
   fallbackQuery:
     'newer_than:14d (from:googlealerts-noreply@google.com OR from:googlealerts-noreply OR subject:"Google 알림" OR subject:"Google Alerts")',
-
-  // 라벨 사용 시에도 최근 N일만 보고 싶으면 newer_than를 활용할 수 있음(라벨 list에는 q가 없음)
-  // -> 여기서는 메시지 get 시점을 고려해 localStorage 기반 "최근 본 제외"로 해결.
-  maxMessagesToRead: 8, // 메시지 상세를 가져올 최대 개수(프론트 성능 고려)
-  maxItemsToReturn: 30, // 최종 기사 결과 최대 개수
-
-  // 최근 본 링크를 며칠 동안 제외할지(중복 반복 방지)
+  maxMessagesToRead: 8,
+  maxItemsToReturn: 30,
   seenTtlDays: 7,
-
-  // 제목 최소 길이 (너무 짧은 "Read more" 방지)
   minTitleLength: 12,
-
-  // snippet 최대 길이
   snippetMaxLen: 320,
 };
 
-// 원하시면 UI에서 설정 저장 시 이 키를 쓰세요.
 const CONFIG_STORAGE_KEY = "dongA_gmail_news_config_v1";
 const SEEN_STORAGE_KEY = "dongA_seen_article_urls_v1";
 
@@ -108,13 +137,6 @@ export const initGoogleAuth = () => {
 /** -----------------------------
  *  Public API
  * ------------------------------ */
-
-/**
- * 옵션:
- * - labelName: 라벨명을 바꿔서 사용하고 싶을 때
- * - queryOverride: fallback 검색쿼리를 바꿔서 사용하고 싶을 때
- * - excludeSeen: 최근 본 링크 제외 여부
- */
 export const getNewsEmails = (opts?: {
   labelName?: string;
   queryOverride?: string;
@@ -131,7 +153,7 @@ export const getNewsEmails = (opts?: {
 
     const labelName = (opts?.labelName ?? config.preferredLabelName).trim();
     const queryOverride = (opts?.queryOverride ?? config.fallbackQuery).trim();
-    const excludeSeen = opts?.excludeSeen !== false; // 기본 true
+    const excludeSeen = opts?.excludeSeen !== false;
     const maxMessagesToRead = Math.max(
       1,
       Math.min(opts?.maxMessagesToRead ?? config.maxMessagesToRead, 30)
@@ -147,14 +169,17 @@ export const getNewsEmails = (opts?: {
       }
 
       try {
-        // 1) 메시지 목록 가져오기: 라벨 우선, 실패 시 fallback 쿼리로 검색
-        const messageIds = await listMessageIds(gapi, labelName, queryOverride, maxMessagesToRead);
+        const messageIds = await listMessageIds(
+          gapi,
+          labelName,
+          queryOverride,
+          maxMessagesToRead
+        );
 
         if (messageIds.length === 0) {
           throw new Error("조건에 맞는 메일이 없습니다. (라벨/검색 조건을 확인해주세요)");
         }
 
-        // 2) 메시지 상세 병렬 로드
         const detailsList = await Promise.all(
           messageIds.map((id) =>
             gapi.client.gmail.users.messages.get({
@@ -165,7 +190,6 @@ export const getNewsEmails = (opts?: {
           )
         );
 
-        // 3) 각 메일에서 기사 링크 추출(+snippet), URL 정규화/중복 제거/스코어링
         const items: GmailNewsItem[] = [];
 
         for (const details of detailsList) {
@@ -185,25 +209,23 @@ export const getNewsEmails = (opts?: {
           items.push(...extracted);
         }
 
-        // 4) URL 정규화 + 중복 제거 + 최근 본 제외
+        // ✅ 링크 정제 + 중복 제거 강화(요청사항)
         const normalized = items
           .map((it) => normalizeItem(it))
-          .filter((it) => !!it.link);
+          .filter((it) => !!it.link)
+          .filter((it) => !isBlockedDomain(it.link))
+          .filter((it) => !isBlockedByKeyword(it.link));
 
         const deduped = dedupeByNormalizedUrl(normalized);
 
         const filteredSeen = excludeSeen ? filterSeen(deduped, config.seenTtlDays) : deduped;
 
-        // 5) 스코어링 + 정렬
         const scored = filteredSeen
           .map((it) => ({ ...it, score: scoreItem(it, keywordHintFromContext(labelName)) }))
           .sort((a, b) => (b.score || 0) - (a.score || 0));
 
-        // 6) 최종 반환(상위 N)
         const result = scored.slice(0, maxItemsToReturn);
 
-        // 7) “이번에 뽑힌” 링크는 seen에 기록(다음 실행 때 중복 방지)
-        //    원치 않으면 excludeSeen 옵션으로 끄세요.
         if (excludeSeen) markSeen(result, config.seenTtlDays);
 
         resolve(result);
@@ -212,7 +234,6 @@ export const getNewsEmails = (opts?: {
       }
     };
 
-    // 토큰 요청
     if (gapi.client.getToken() === null) {
       tokenClient.requestAccessToken({ prompt: "consent" });
     } else {
@@ -224,17 +245,14 @@ export const getNewsEmails = (opts?: {
 /** -----------------------------
  *  Gmail message listing
  * ------------------------------ */
-
 async function listMessageIds(
   gapi: any,
   labelName: string,
   fallbackQuery: string,
   maxMessagesToRead: number
 ): Promise<string[]> {
-  // 1) 라벨 찾기(정확히 일치에 가깝게)
   const labelId = await findLabelId(gapi, labelName);
 
-  // 2) 라벨이 있으면 라벨로 list
   if (labelId) {
     const res = await gapi.client.gmail.users.messages.list({
       userId: "me",
@@ -245,7 +263,6 @@ async function listMessageIds(
     return messages.map((m: any) => m.id).filter(Boolean);
   }
 
-  // 3) 라벨이 없으면 fallback query로 list
   const res = await gapi.client.gmail.users.messages.list({
     userId: "me",
     q: fallbackQuery,
@@ -255,6 +272,12 @@ async function listMessageIds(
   return messages.map((m: any) => m.id).filter(Boolean);
 }
 
+/**
+ * ✅ “뉴스요약” 라벨 탐색을 더 안전하게 (요청사항)
+ * - 1) 공백/대소문자 무시한 정확 일치
+ * - 2) startsWith
+ * - 3) contains (최후, 오탐 가능성 있으니 마지막에만)
+ */
 async function findLabelId(gapi: any, labelName: string): Promise<string | null> {
   try {
     const labelsRes = await gapi.client.gmail.users.labels.list({ userId: "me" });
@@ -263,13 +286,14 @@ async function findLabelId(gapi: any, labelName: string): Promise<string | null>
     const norm = (s: string) => (s || "").replace(/\s+/g, "").toLowerCase();
     const target = norm(labelName);
 
-    // 1) 공백 무시 + 대소문자 무시 "정확히 일치"
     const exact = labels.find((l: any) => norm(l?.name) === target);
     if (exact?.id) return exact.id;
 
-    // 2) fallback: 시작 일치 (contains는 오탐 많아서 지양)
     const starts = labels.find((l: any) => norm(l?.name).startsWith(target));
     if (starts?.id) return starts.id;
+
+    const contains = labels.find((l: any) => norm(l?.name).includes(target));
+    if (contains?.id) return contains.id;
 
     return null;
   } catch (e) {
@@ -281,7 +305,6 @@ async function findLabelId(gapi: any, labelName: string): Promise<string | null>
 /** -----------------------------
  *  Email decoding + extraction
  * ------------------------------ */
-
 function extractEmailBodies(payload: any): {
   decodedHtml: string;
   decodedText: string;
@@ -318,11 +341,9 @@ function decodeBase64Url(data: string) {
   try {
     let base64 = data.replace(/-/g, "+").replace(/_/g, "/");
     while (base64.length % 4) base64 += "=";
-    // UTF-8 decode
     return decodeURIComponent(escape(atob(base64)));
   } catch {
     try {
-      // fallback
       return atob(data);
     } catch {
       return "";
@@ -342,7 +363,6 @@ function extractArticlesFromEmail(args: {
   const out: GmailNewsItem[] = [];
   let found = false;
 
-  // 1) HTML 우선: DOM 파싱 후 anchor를 기사 후보로 수집
   if (decodedHtml) {
     try {
       const parser = new DOMParser();
@@ -354,7 +374,9 @@ function extractArticlesFromEmail(args: {
         let url = unwrapGoogleRedirect(rawHref);
         url = url.trim();
 
-        // 앵커 텍스트가 비어있을 수 있어, aria-label/title도 보조로 사용
+        // ✅ 소셜/동영상 도메인 즉시 차단
+        if (!url || isBlockedDomain(url) || isBlockedByKeyword(url)) continue;
+
         const rawTitle =
           cleanInlineText(
             (a.textContent || "") +
@@ -364,17 +386,17 @@ function extractArticlesFromEmail(args: {
               ((a as any).getAttribute?.("title") || "")
           ) || "";
 
-        // 링크 주변 텍스트(snippet)
         const snippet = extractSnippetAroundAnchor(a, snippetMaxLen);
 
-        // 링크 필터
+        // ✅ 링크 필터: 기사형 URL인지 + 차단 대상인지
         if (!isLikelyArticleUrl(url)) continue;
 
-        // 제목 필터 (너무 짧은 버튼류 제거)
+        // ✅ 제목 너무 짧거나 버튼류 제거 (요청사항)
         const titleCandidate = bestTitle(rawTitle, snippet, subject);
         if (titleCandidate.length < minTitleLength) continue;
+        if (looksLikeButtonText(titleCandidate)) continue;
 
-        // 구글알림/구독해지/설정 등 제외
+        // 시스템 링크 제외
         if (isNonArticleSystemLink(url)) continue;
 
         const source = safeHostname(url) || "웹 뉴스";
@@ -391,16 +413,16 @@ function extractArticlesFromEmail(args: {
     }
   }
 
-  // 2) fallback: 텍스트에서 URL 패턴 추출 (HTML 파싱 실패/없는 경우)
   if (!found && decodedText) {
     const urls = extractUrlsFromText(decodedText)
       .map(unwrapGoogleRedirect)
       .map((u) => u.trim())
       .filter(Boolean)
+      .filter((u) => !isBlockedDomain(u))
+      .filter((u) => !isBlockedByKeyword(u))
       .filter(isLikelyArticleUrl)
       .filter((u) => !isNonArticleSystemLink(u));
 
-    // 텍스트에서는 제목 추정이 어렵기 때문에 subject 기반 + 도메인 보조
     for (const u of urls.slice(0, 10)) {
       out.push({
         title: cleanInlineText(subject) || "제목 없음",
@@ -412,11 +434,10 @@ function extractArticlesFromEmail(args: {
     found = out.length > 0;
   }
 
-  // 3) 최후: 그래도 없으면 메일 원문 링크만
   if (!found && decodedText.length > 10) {
     out.push({
       title: cleanInlineText(subject) || "제목 없음",
-      link: "", // 링크가 없으면 normalize에서 떨어질 수 있음
+      link: "",
       source: "Gmail 원문",
       body: decodedText.substring(0, snippetMaxLen),
     });
@@ -426,7 +447,6 @@ function extractArticlesFromEmail(args: {
 }
 
 function extractSnippetAroundAnchor(anchor: Element, maxLen: number) {
-  // anchor의 부모/조부모 텍스트를 가져오되 너무 길면 잘라냄
   const parent = anchor.parentElement;
   const grand = parent?.parentElement;
 
@@ -436,13 +456,11 @@ function extractSnippetAroundAnchor(anchor: Element, maxLen: number) {
     grand ? cleanInlineText(grand.textContent || "") : "",
   ].filter(Boolean);
 
-  // 가장 정보량 있는(길고) 텍스트 선택
   const best = candidates.sort((a, b) => b.length - a.length)[0] || "";
   return best.length > maxLen ? best.slice(0, maxLen) : best;
 }
 
 function buildBodyForAI(snippet: string, decodedText: string, maxLen: number) {
-  // snippet이 있으면 snippet 우선, 없으면 텍스트 앞부분
   const s = cleanInlineText(snippet || "");
   if (s && s.length >= 40) return s.slice(0, maxLen);
 
@@ -454,12 +472,8 @@ function bestTitle(rawTitle: string, snippet: string, subject: string) {
   const t = cleanInlineText(rawTitle);
   if (t && !looksLikeButtonText(t)) return t;
 
-  // snippet에서 첫 문장/앞부분을 제목 후보로
   const s = cleanInlineText(snippet);
-  if (s && s.length >= 12) {
-    // 너무 길면 앞부분만
-    return s.length > 80 ? s.slice(0, 80) : s;
-  }
+  if (s && s.length >= 12) return s.length > 80 ? s.slice(0, 80) : s;
 
   return cleanInlineText(subject) || "제목 없음";
 }
@@ -480,6 +494,9 @@ function looksLikeButtonText(t: string) {
     "view",
     "continue",
     "신청",
+    "구독",
+    "수신거부",
+    "unsubscribe",
   ];
   return bad.includes(s);
 }
@@ -487,18 +504,16 @@ function looksLikeButtonText(t: string) {
 function cleanInlineText(text: string) {
   return (text || "")
     .replace(/\s+/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width 제거
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .trim();
 }
 
 /** -----------------------------
  *  URL normalization / filtering
  * ------------------------------ */
-
 function unwrapGoogleRedirect(url: string) {
   if (!url) return "";
 
-  // google.com/url?q=...
   if (url.includes("google.com/url?q=")) {
     try {
       return decodeURIComponent(url.split("url?q=")[1].split("&")[0]);
@@ -507,7 +522,6 @@ function unwrapGoogleRedirect(url: string) {
     }
   }
 
-  // google.com/url?url=...
   if (url.includes("google.com/url?")) {
     try {
       const u = new URL(url);
@@ -536,10 +550,14 @@ function isNonArticleSystemLink(url: string) {
   return bad.some((b) => u.includes(b));
 }
 
+/**
+ * ✅ 기사 URL 판정 + 차단 도메인 반영 (요청사항)
+ */
 function isLikelyArticleUrl(url: string) {
   if (!url) return false;
+  if (isBlockedDomain(url)) return false;
+  if (isBlockedByKeyword(url)) return false;
 
-  // 검색/프록시/홈 등 제외
   const bad = [
     "google.com/search",
     "news.google.com/search",
@@ -553,13 +571,8 @@ function isLikelyArticleUrl(url: string) {
   try {
     const u = new URL(url);
     if (!u.hostname.includes(".")) return false;
-
-    // 루트(/)만 있는 링크는 기사일 확률 낮음
     if (!u.pathname || u.pathname === "/" || u.pathname.length < 2) return false;
-
-    // mailto, tel 등 제외
     if (!/^https?:$/i.test(u.protocol)) return false;
-
     return true;
   } catch {
     return false;
@@ -575,7 +588,10 @@ function safeHostname(url: string) {
 }
 
 function normalizeItem(item: GmailNewsItem): GmailNewsItem {
-  const normalizedLink = normalizeNewsUrl(item.link);
+  // ✅ google redirect 복원 -> utm 제거 -> www 제거 -> hash 제거 (요청사항)
+  const unwrapped = unwrapGoogleRedirect(item.link);
+  const normalizedLink = normalizeNewsUrl(unwrapped);
+
   const source = safeHostname(normalizedLink) || item.source || "웹 뉴스";
 
   return {
@@ -592,7 +608,6 @@ function normalizeNewsUrl(url: string) {
   try {
     const u = new URL(url);
 
-    // tracking params 제거
     const dropPrefixes = ["utm_", "fbclid", "gclid", "igshid", "mc_cid", "mc_eid"];
     [...u.searchParams.keys()].forEach((k) => {
       const lk = k.toLowerCase();
@@ -601,14 +616,9 @@ function normalizeNewsUrl(url: string) {
       }
     });
 
-    // hash 제거(추적/앵커 방지)
     u.hash = "";
-
-    // www 정규화(선호에 따라 바꿀 수 있음)
-    // 여기서는 www를 제거해 중복 감소
     u.hostname = u.hostname.replace(/^www\./, "");
 
-    // trailing slash 정리
     let s = u.toString();
     if (s.endsWith("/")) s = s.slice(0, -1);
     return s;
@@ -629,7 +639,6 @@ function dedupeByNormalizedUrl(items: GmailNewsItem[]) {
       continue;
     }
 
-    // 같은 URL이면 "더 좋은" 제목/본문을 가진 것을 선택
     const prev = map.get(key)!;
     const better = pickBetterItem(prev, it);
     map.set(key, better);
@@ -644,7 +653,6 @@ function pickBetterItem(a: GmailNewsItem, b: GmailNewsItem) {
   const aBody = (a.body || "").length;
   const bBody = (b.body || "").length;
 
-  // 제목이 더 길고(정보량) 본문도 길면 우선
   const aScore = aTitle * 2 + aBody;
   const bScore = bTitle * 2 + bBody;
 
@@ -663,15 +671,13 @@ function extractUrlsFromText(text: string) {
 }
 
 /** -----------------------------
- *  Seen storage (repeat removal)
+ *  Seen storage
  * ------------------------------ */
-
-type SeenMap = Record<string, number>; // url -> expireAt(ms)
+type SeenMap = Record<string, number>;
 
 function nowMs() {
   return Date.now();
 }
-
 function daysToMs(days: number) {
   return Math.max(1, days) * 24 * 60 * 60 * 1000;
 }
@@ -681,7 +687,6 @@ function loadSeen(): SeenMap {
     const raw = localStorage.getItem(SEEN_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as SeenMap;
-    // cleanup expired
     const t = nowMs();
     for (const k of Object.keys(parsed)) {
       if (!parsed[k] || parsed[k] < t) delete parsed[k];
@@ -696,9 +701,7 @@ function loadSeen(): SeenMap {
 function saveSeen(map: SeenMap) {
   try {
     localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function filterSeen(items: GmailNewsItem[], ttlDays: number) {
@@ -724,34 +727,27 @@ function markSeen(items: GmailNewsItem[], ttlDays: number) {
 }
 
 /** -----------------------------
- *  Scoring (enterprise ranking)
+ *  Scoring
  * ------------------------------ */
-
 function keywordHintFromContext(labelName: string) {
-  // 라벨/환경에 따라 힌트. 필요하면 UI에서 키워드 넣어 확장 가능.
   return (labelName || "").trim();
 }
 
 function scoreItem(item: GmailNewsItem, keywordHint: string) {
   let score = 0;
 
-  // 1) 제목 품질
   const titleLen = (item.title || "").length;
   score += clamp(titleLen, 0, 120) * 0.4;
 
-  // 2) 본문/snippet 정보량
   const bodyLen = (item.body || "").length;
   score += clamp(bodyLen, 0, 300) * 0.2;
 
-  // 3) 도메인 신뢰도(가벼운 휴리스틱; 필요하면 실제 화이트리스트로 교체)
   const host = (item.source || "").toLowerCase();
   score += domainTrustScore(host);
 
-  // 4) 키워드 힌트 포함(라벨명/키워드 등)
   const hint = (keywordHint || "").toLowerCase();
   if (hint && (item.title || "").toLowerCase().includes(hint)) score += 8;
 
-  // 5) URL 형태(기사형 path 선호)
   score += urlShapeScore(item.link);
 
   return score;
@@ -762,8 +758,6 @@ function clamp(n: number, min: number, max: number) {
 }
 
 function domainTrustScore(host: string) {
-  // “프론트만”에서 쓸 수 있는 현실적 방식: 대형/공식 도메인 약간 가산
-  // 조직에서 필요하면 여기 리스트를 “내부 whitelist”로 바꾸면 기업용으로 훨씬 좋아집니다.
   const strong = [
     "reuters.com",
     "bloomberg.com",
@@ -784,13 +778,7 @@ function domainTrustScore(host: string) {
     "hankyung.com",
     "yonhapnews.co.kr",
   ];
-  const medium = [
-    "naver.com",
-    "daum.net",
-    "medium.com",
-    "substack.com",
-    "brunch.co.kr",
-  ];
+  const medium = ["naver.com", "daum.net", "medium.com", "substack.com", "brunch.co.kr"];
 
   if (strong.some((d) => host.endsWith(d))) return 18;
   if (medium.some((d) => host.endsWith(d))) return 8;
@@ -802,8 +790,6 @@ function urlShapeScore(url: string) {
     const u = new URL(url);
     const p = u.pathname || "";
     let s = 0;
-
-    // 기사형 path 특징: /news/ /article/ /2026/ 등
     if (/(news|article|story|stories|press|post)/i.test(p)) s += 6;
     if (/(20\d{2})/i.test(p)) s += 4;
     if (p.split("/").filter(Boolean).length >= 3) s += 3;
@@ -816,7 +802,6 @@ function urlShapeScore(url: string) {
 /** -----------------------------
  *  Config storage
  * ------------------------------ */
-
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -828,16 +813,10 @@ function loadConfig() {
   }
 }
 
-/**
- * 필요 시 UI에서 호출해 설정 저장하세요.
- * (요청하시면 설정 UI까지 같이 붙여드릴게요)
- */
 export function saveGmailNewsConfig(partial: Partial<typeof DEFAULT_CONFIG>) {
   const curr = loadConfig();
   const next = { ...curr, ...partial };
   try {
     localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
