@@ -391,6 +391,7 @@ const App: React.FC = () => {
 
   const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
   const [tempApiKey, setTempApiKey] = useState("");
+  const [tempSerperKey, setTempSerperKey] = useState("");
 
   const [selectedMode, setSelectedMode] = useState<
     (typeof ANALYSIS_MODES)[number]
@@ -557,33 +558,24 @@ const App: React.FC = () => {
       win.process.env.GEMINI_API_KEY = savedKey;
       win.process.env.VITE_GEMINI_API_KEY = savedKey;
     }
-  }, []);
 
-  // ✅ 구글 인증 준비
-  useEffect(() => {
-    initGoogleAuth().then((success) => setIsGoogleAuthReady(!!success));
-  }, []);
-
-  const handleSaveApiKey = useCallback(() => {
-    const trimmedKey = tempApiKey.trim();
-    if (!trimmedKey) {
-      showToast("API 키를 입력해주세요.");
-      return;
-    }
-    localStorage.setItem("gemini_api_key", trimmedKey);
-    if (typeof window !== "undefined") {
+    const savedSerperKey = localStorage.getItem("serper_api_key");
+    if (savedSerperKey && typeof window !== "undefined") {
       const win = window as any;
       win.process = win.process || { env: {} };
       win.process.env = win.process.env || {};
-      win.process.env.API_KEY = trimmedKey;
-      win.process.env.GEMINI_API_KEY = trimmedKey;
-      win.process.env.VITE_GEMINI_API_KEY = trimmedKey;
+      win.process.env.SERPER_API_KEY = savedSerperKey;
+      win.process.env.VITE_SERPER_API_KEY = savedSerperKey;
     }
-    showToast("API 키가 저장되었습니다.");
-    setIsKeyModalOpen(false);
-    setState((prev) => ({ ...prev, error: null }));
-  }, [tempApiKey, showToast]);
+  }, []);
 
+  useEffect(() => {
+    if (!isKeyModalOpen) return;
+    try {
+      setTempApiKey(localStorage.getItem("gemini_api_key") || "");
+      setTempSerperKey(localStorage.getItem("serper_api_key") || "");
+    } catch {}
+  }, [isKeyModalOpen]);
 
   const getGeminiRuntimeKey = useCallback(() => {
     try {
@@ -594,19 +586,17 @@ const App: React.FC = () => {
     const env = (import.meta as any)?.env || {};
     const winEnv = (window as any)?.process?.env || {};
 
-    return (
-      String(
-        env?.VITE_GEMINI_API_KEY ||
-          env?.GEMINI_API_KEY ||
-          env?.VITE_API_KEY ||
-          env?.API_KEY ||
-          winEnv?.VITE_GEMINI_API_KEY ||
-          winEnv?.GEMINI_API_KEY ||
-          winEnv?.VITE_API_KEY ||
-          winEnv?.API_KEY ||
-          ""
-      ).trim()
-    );
+    return String(
+      env?.VITE_GEMINI_API_KEY ||
+      env?.GEMINI_API_KEY ||
+      env?.VITE_API_KEY ||
+      env?.API_KEY ||
+      winEnv?.VITE_GEMINI_API_KEY ||
+      winEnv?.GEMINI_API_KEY ||
+      winEnv?.VITE_API_KEY ||
+      winEnv?.API_KEY ||
+      ""
+    ).trim();
   }, []);
 
   const getSerperRuntimeKey = useCallback(() => {
@@ -618,16 +608,52 @@ const App: React.FC = () => {
     const env = (import.meta as any)?.env || {};
     const winEnv = (window as any)?.process?.env || {};
 
-    return (
-      String(
-        env?.VITE_SERPER_API_KEY ||
-          env?.SERPER_API_KEY ||
-          winEnv?.VITE_SERPER_API_KEY ||
-          winEnv?.SERPER_API_KEY ||
-          ""
-      ).trim()
-    );
+    return String(
+      env?.VITE_SERPER_API_KEY ||
+      env?.SERPER_API_KEY ||
+      winEnv?.VITE_SERPER_API_KEY ||
+      winEnv?.SERPER_API_KEY ||
+      ""
+    ).trim();
   }, []);
+
+  // ✅ 구글 인증 준비
+  useEffect(() => {
+    initGoogleAuth().then((success) => setIsGoogleAuthReady(!!success));
+  }, []);
+
+  const handleSaveApiKey = useCallback(() => {
+    const trimmedKey = tempApiKey.trim();
+    const trimmedSerperKey = tempSerperKey.trim();
+
+    if (!trimmedKey) {
+      showToast("Gemini API 키를 입력해주세요.");
+      return;
+    }
+
+    if (!trimmedSerperKey) {
+      showToast("Serper API 키를 입력해주세요.");
+      return;
+    }
+
+    localStorage.setItem("gemini_api_key", trimmedKey);
+    localStorage.setItem("serper_api_key", trimmedSerperKey);
+
+    if (typeof window !== "undefined") {
+      const win = window as any;
+      win.process = win.process || { env: {} };
+      win.process.env = win.process.env || {};
+      win.process.env.API_KEY = trimmedKey;
+      win.process.env.GEMINI_API_KEY = trimmedKey;
+      win.process.env.VITE_GEMINI_API_KEY = trimmedKey;
+      win.process.env.SERPER_API_KEY = trimmedSerperKey;
+      win.process.env.VITE_SERPER_API_KEY = trimmedSerperKey;
+    }
+
+    showToast("Gemini / Serper API 키가 저장되었습니다.");
+    setIsKeyModalOpen(false);
+    setState((prev) => ({ ...prev, error: null }));
+  }, [tempApiKey, tempSerperKey, showToast]);
 
   // ✅ [업그레이드] performSearch: A 근거모드 분기 + Serper evidence
   const performSearch = useCallback(
@@ -636,6 +662,14 @@ const App: React.FC = () => {
 
       const apiKey = getGeminiRuntimeKey();
       if (!apiKey) {
+        showToast("Gemini API 키를 입력해주세요.");
+        setIsKeyModalOpen(true);
+        return;
+      }
+
+      const serperKey = getSerperRuntimeKey();
+      if (useEvidenceMode && !serperKey) {
+        showToast("소스피드를 위해 Serper API 키를 입력해주세요.");
         setIsKeyModalOpen(true);
         return;
       }
@@ -660,9 +694,26 @@ const App: React.FC = () => {
 
         // ✅ A 모드: Serper 근거 기반 요약(citations/factChecks 포함)
         if (useEvidenceMode) {
-          const serperKey = getSerperRuntimeKey();
-          if (!serperKey) {
-            showToast("Serper API 키가 없어 소스피드는 기본 분석 결과로 표시합니다.");
+          let sources: any[] = [];
+          try {
+            sources = await fetchNewsSourcesSerper(searchKeyword, 6);
+          } catch {
+            sources = [];
+          }
+
+          const evidenceArray = normalizeEvidenceArray(
+          (sources || []).map((s: any) => ({
+            title: s?.title,
+            url: s?.url,
+            source: s?.source,
+            snippet: s?.snippet,
+            date: s?.date,
+          })),
+          12
+        );
+
+          // 근거가 너무 부족하면 기존 모드로 폴백
+          if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
               searchKeyword,
               finalPrompt
@@ -679,52 +730,6 @@ const App: React.FC = () => {
             return;
           }
 
-          let sources: any[] = [];
-          try {
-            sources = await fetchNewsSourcesSerper(searchKeyword, 6);
-          } catch {
-            sources = [];
-          }
-
-          const safeSourceFeed = sanitizeNewsItems(
-            (sources || []).map((s: any) => ({
-              title: s?.title || "제목 없음",
-              uri: s?.url || "",
-              source: s?.source || "",
-              snippet: s?.snippet || "",
-              date: s?.date || "",
-            }))
-          );
-
-          const evidenceArray = normalizeEvidenceArray(
-            (sources || []).map((s: any) => ({
-              title: s?.title,
-              url: s?.url,
-              source: s?.source,
-              snippet: s?.snippet,
-              date: s?.date,
-            })),
-            12
-          );
-
-          // 근거가 너무 부족하면 기존 모드로 폴백
-          if (evidenceArray.length < 3) {
-            const { news, analysis } = await service.fetchTrendsAndAnalysis(
-              searchKeyword,
-              finalPrompt
-            );
-            const safeNews = sanitizeNewsItems(news);
-            setState((prev) => ({
-              ...prev,
-              results: safeNews,
-              analysis,
-              isLoading: false,
-            }));
-            setNewsSources(safeSourceFeed.length ? safeSourceFeed : safeNews);
-            setOsmuText(buildStrategyText(analysis, searchKeyword));
-            return;
-          }
-
           const { news, analysis } = await service.fetchTrendsAndAnalysisA(
             searchKeyword,
             finalPrompt,
@@ -737,7 +742,7 @@ const App: React.FC = () => {
             analysis,
             isLoading: false,
           }));
-          setNewsSources(safeSourceFeed.length ? safeSourceFeed : safeNews);
+          setNewsSources(safeNews);
           setOsmuText(buildStrategyText(analysis, searchKeyword));
           return;
         }
@@ -895,7 +900,7 @@ ${combinedEmailText}
       }));
       showToast("G메일 요약 실패: " + (err?.message || "오류"));
     }
-  }, [isGoogleAuthReady, selectedPersona.prompt, showToast]);
+  }, [getGeminiRuntimeKey, isGoogleAuthReady, selectedPersona.prompt, showToast]);
 
   const handleModeChange = useCallback(
     (mode: (typeof ANALYSIS_MODES)[number]) => {
@@ -1899,6 +1904,15 @@ ${currentContent}
                 placeholder="Gemini API Key 입력 (AIza...)"
                 value={tempApiKey}
                 onChange={(e) => setTempApiKey(e.target.value)}
+                className={`w-full border rounded-2xl py-4 px-6 font-mono text-sm focus:ring-4 focus:ring-[#0071e3]/10 outline-none transition-all ${
+                  isDarkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-gray-50 border-gray-200 text-gray-900"
+                }`}
+              />
+              <input
+                type="password"
+                placeholder="Serper API Key 입력"
+                value={tempSerperKey}
+                onChange={(e) => setTempSerperKey(e.target.value)}
                 className={`w-full border rounded-2xl py-4 px-6 font-mono text-sm focus:ring-4 focus:ring-[#0071e3]/10 outline-none transition-all ${
                   isDarkMode ? "bg-gray-800 border-gray-700 text-white" : "bg-gray-50 border-gray-200 text-gray-900"
                 }`}
