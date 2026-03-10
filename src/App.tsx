@@ -330,7 +330,7 @@ const sanitizeNewsItems = (items: NewsItem[], allowBlocked = false): NewsItem[] 
     const next: NewsItem = {
       ...item,
       uri,
-      source: String(item?.source || safeHost(uri) || "웹 뉴스").trim() || "웹 뉴스",
+      source: String(item?.source || getNewsHost({ uri, source: item?.source }) || "웹 뉴스").trim() || "웹 뉴스",
     };
 
     const prev = dedup.get(uri);
@@ -1764,7 +1764,6 @@ ${currentContent}
                           isDarkMode={isDarkMode}
                           activePoint={activePoint}
                           onShowToast={showToast}
-                          activePoint={activePoint}
                         />
                       </div>
                     ))

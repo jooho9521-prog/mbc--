@@ -24,13 +24,22 @@ export type NewsSourceItem = {
  *  Blocklist
  * ------------------------------ */
 export const BLOCKED_DOMAINS = [
+  "google.com",
+  "google.co.kr",
+  "m.google.com",
+  "news.google.co.kr",
   "tiktok.com",
   "youtube.com",
+  "youtube-nocookie.com",
+  "m.youtube.com",
   "youtu.be",
   "instagram.com",
   "facebook.com",
   "x.com",
+  "m.x.com",
   "twitter.com",
+  "m.twitter.com",
+  "t.co",
   "threads.net",
   "reddit.com",
   "discord.com",
@@ -319,26 +328,35 @@ const LOW_PRIORITY_HOST_PENALTIES: Record<string, number> = {
   "newsway.co.kr": 70,
   "newsprime.co.kr": 70,
   "etoday.co.kr": 65,
+  "investing.com": 200,
+  "cleantechnica.com": 200,
+  "teslarati.com": 200,
+  "teslaaccessories.com": 200,
+  "swotpal.com": 300,
+  "youtube.com": 400,
+  "x.com": 400,
+  "twitter.com": 400,
   "news.mt.co.kr": 55,
 };
 
 const ALLOWED_MAJOR_HOSTS = [
   "hani.co.kr",
-  "donga.com",
-  "ytn.co.kr",
-  "bbc.com",
-  "reuters.com",
-  "bloomberg.com",
-  "yonhapnews.co.kr",
-  "joongang.co.kr",
-  "chosun.com",
   "khan.co.kr",
+  "donga.com",
+  "chosun.com",
+  "joongang.co.kr",
+  "munhwa.com",
   "mk.co.kr",
   "hankyung.com",
+  "yonhapnews.co.kr",
+  "ytn.co.kr",
   "kbs.co.kr",
   "imbc.com",
   "sbs.co.kr",
   "newsis.com",
+  "bbc.com",
+  "reuters.com",
+  "bloomberg.com",
   "cnn.com",
   "nytimes.com",
   "wsj.com",
@@ -473,7 +491,7 @@ export function isNewsLikeUrl(url: string) {
   }
 }
 
-function scoreNewsSource(item: NewsSourceItem, origin: "news" | "search") {
+function scoreNewsSource(item: NewsSourceItem & { _origin?: "news" | "search" }, origin: "news" | "search") {
   let score = 0;
   const url = String(item.url || "").trim();
   const title = cleanInlineText(item.title || "");
@@ -516,8 +534,11 @@ function scoreNewsSource(item: NewsSourceItem, origin: "news" | "search") {
 export function filterAndRankNewsSources(items: Array<NewsSourceItem & { _origin?: "news" | "search" }>, minScore = 80) {
   const ranked = uniqByUrl(items)
     .filter((item) => {
-      const host = getHostFromUrl(String(item.url || ""));
+      const url = String(item.url || "");
+      const host = getHostFromUrl(url);
       if (!host) return false;
+      if (isBlockedDomain(url) || isBlockedByKeyword(url)) return false;
+      if (BAD_HOSTS.some((b) => host === b || host.endsWith("." + b))) return false;
       if (isExcludedRepeatedHost(host)) return false;
       return isAllowedMajorOutletHost(host);
     })
