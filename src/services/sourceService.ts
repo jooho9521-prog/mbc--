@@ -629,12 +629,13 @@ async function serperPost(endpoint: "news" | "search", apiKey: string, body: any
 }
 
 function getSerperKey(): string {
-  const env = (import.meta as any).env || {};
+  const env = (import.meta as any)?.env || {};
+  const winEnv = (window as any)?.process?.env || {};
   const candidates = [
     env?.VITE_SERPER_API_KEY,
     env?.SERPER_API_KEY,
-    (window as any)?.process?.env?.VITE_SERPER_API_KEY,
-    (window as any)?.process?.env?.SERPER_API_KEY,
+    winEnv?.VITE_SERPER_API_KEY,
+    winEnv?.SERPER_API_KEY,
   ];
 
   for (const candidate of candidates) {

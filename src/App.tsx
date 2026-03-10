@@ -584,14 +584,57 @@ const App: React.FC = () => {
     setState((prev) => ({ ...prev, error: null }));
   }, [tempApiKey, showToast]);
 
+
+  const getGeminiRuntimeKey = useCallback(() => {
+    try {
+      const localKey = localStorage.getItem("gemini_api_key");
+      if (localKey) return String(localKey).trim();
+    } catch {}
+
+    const env = (import.meta as any)?.env || {};
+    const winEnv = (window as any)?.process?.env || {};
+
+    return (
+      String(
+        env?.VITE_GEMINI_API_KEY ||
+          env?.GEMINI_API_KEY ||
+          env?.VITE_API_KEY ||
+          env?.API_KEY ||
+          winEnv?.VITE_GEMINI_API_KEY ||
+          winEnv?.GEMINI_API_KEY ||
+          winEnv?.VITE_API_KEY ||
+          winEnv?.API_KEY ||
+          ""
+      ).trim()
+    );
+  }, []);
+
+  const getSerperRuntimeKey = useCallback(() => {
+    try {
+      const localKey = localStorage.getItem("serper_api_key");
+      if (localKey) return String(localKey).trim();
+    } catch {}
+
+    const env = (import.meta as any)?.env || {};
+    const winEnv = (window as any)?.process?.env || {};
+
+    return (
+      String(
+        env?.VITE_SERPER_API_KEY ||
+          env?.SERPER_API_KEY ||
+          winEnv?.VITE_SERPER_API_KEY ||
+          winEnv?.SERPER_API_KEY ||
+          ""
+      ).trim()
+    );
+  }, []);
+
   // ✅ [업그레이드] performSearch: A 근거모드 분기 + Serper evidence
   const performSearch = useCallback(
     async (searchKeyword: string, modePrompt: string) => {
       if (!searchKeyword.trim()) return;
 
-      const apiKey =
-        localStorage.getItem("gemini_api_key") ||
-        (window as any).process?.env?.API_KEY;
+      const apiKey = getGeminiRuntimeKey();
       if (!apiKey) {
         setIsKeyModalOpen(true);
         return;
@@ -617,6 +660,25 @@ const App: React.FC = () => {
 
         // ✅ A 모드: Serper 근거 기반 요약(citations/factChecks 포함)
         if (useEvidenceMode) {
+          const serperKey = getSerperRuntimeKey();
+          if (!serperKey) {
+            showToast("Serper API 키가 없어 소스피드는 기본 분석 결과로 표시합니다.");
+            const { news, analysis } = await service.fetchTrendsAndAnalysis(
+              searchKeyword,
+              finalPrompt
+            );
+            const safeNews = sanitizeNewsItems(news);
+            setState((prev) => ({
+              ...prev,
+              results: safeNews,
+              analysis,
+              isLoading: false,
+            }));
+            setNewsSources(safeNews);
+            setOsmuText(buildStrategyText(analysis, searchKeyword));
+            return;
+          }
+
           let sources: any[] = [];
           try {
             sources = await fetchNewsSourcesSerper(searchKeyword, 6);
@@ -624,18 +686,6 @@ const App: React.FC = () => {
             sources = [];
           }
 
-          const evidenceArray = normalizeEvidenceArray(
-          (sources || []).map((s: any) => ({
-            title: s?.title,
-            url: s?.url,
-            source: s?.source,
-            snippet: s?.snippet,
-            date: s?.date,
-          })),
-          12
-        );
-
-          // 근거가 너무 부족하면 기존 모드로 폴백
           const safeSourceFeed = sanitizeNewsItems(
             (sources || []).map((s: any) => ({
               title: s?.title || "제목 없음",
@@ -646,6 +696,18 @@ const App: React.FC = () => {
             }))
           );
 
+          const evidenceArray = normalizeEvidenceArray(
+            (sources || []).map((s: any) => ({
+              title: s?.title,
+              url: s?.url,
+              source: s?.source,
+              snippet: s?.snippet,
+              date: s?.date,
+            })),
+            12
+          );
+
+          // 근거가 너무 부족하면 기존 모드로 폴백
           if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
               searchKeyword,
@@ -708,7 +770,7 @@ const App: React.FC = () => {
         );
       }
     },
-    [selectedPersona.prompt, useEvidenceMode, showToast]
+    [getGeminiRuntimeKey, getSerperRuntimeKey, selectedPersona.prompt, useEvidenceMode, showToast]
   );
 
   const handleSearch = useCallback(
@@ -735,9 +797,7 @@ const App: React.FC = () => {
       return;
     }
 
-    const apiKey =
-      localStorage.getItem("gemini_api_key") ||
-      (window as any).process?.env?.API_KEY;
+    const apiKey = getGeminiRuntimeKey();
     if (!apiKey) {
       setIsKeyModalOpen(true);
       return;
