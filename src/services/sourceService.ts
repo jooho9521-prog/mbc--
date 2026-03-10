@@ -108,14 +108,6 @@ const MEDIA_META: Record<string, MediaMeta> = {
     maxPerHost: 1,
     outletBoost: 154,
   },
-  "munhwa.com": {
-    region: "kr",
-    leaning: "conservative",
-    label: "문화일보",
-    preferred: true,
-    maxPerHost: 1,
-    outletBoost: 146,
-  },
 
   // 국내 중립
   "hankookilbo.com": {
@@ -189,14 +181,6 @@ const MEDIA_META: Record<string, MediaMeta> = {
     preferred: true,
     maxPerHost: 1,
     outletBoost: 152,
-  },
-  "news1.kr": {
-    region: "kr",
-    leaning: "neutral",
-    label: "뉴스1",
-    preferred: true,
-    maxPerHost: 1,
-    outletBoost: 148,
   },
   "newsis.com": {
     region: "kr",
@@ -341,6 +325,8 @@ export const BLOCKED_URL_KEYWORDS = [
   "myaccount.google",
   "mail.google.com",
 ];
+
+const EXCLUDED_OUTLET_HOSTS = ["munhwa.com", "news1.kr"];
 
 export function isBlockedDomain(url: string) {
   try {
@@ -606,6 +592,7 @@ function getHostCap(host: string) {
 }
 
 function isAllowedMajorOutletHost(host: string) {
+  if (EXCLUDED_OUTLET_HOSTS.some((domain) => matchHost(host, domain))) return false;
   return !!findMediaMeta(host);
 }
 
@@ -631,29 +618,42 @@ function diversifyRankedNewsSources(
 ) {
   const hostCounts = new Map<string, number>();
   const bucketCounts = new Map<PerspectiveBucket, number>();
+  const regionCounts = new Map<"kr" | "global", number>();
 
   const selected: RankedNewsSourceItem[] = [];
   const remaining = [...items];
 
   const BUCKET_TARGET: Record<PerspectiveBucket, number> = {
-    "kr-progressive": 2,
-    "kr-conservative": 2,
+    "kr-progressive": 1,
+    "kr-conservative": 1,
     "kr-neutral": 2,
     "global-neutral": 2,
     "global-progressive": 1,
     "global-conservative": 1,
-    general: 3,
+    general: 2,
+  };
+
+  const MIN_REGION_TARGET = {
+    kr: Math.min(4, limit),
+    global: Math.min(4, limit),
+  };
+
+  const getRegion = (host: string): "kr" | "global" | null => {
+    const meta = findMediaMeta(host);
+    return meta?.region || null;
   };
 
   const canPick = (item: RankedNewsSourceItem, relaxed = false) => {
     const host = getHostFromUrl(String(item.url || ""));
     const bucket = getPerspectiveBucket(host);
+    const region = getRegion(host);
+
+    if (!host || !region) return false;
 
     const hostCap = getHostCap(host);
     const bucketCap = BUCKET_TARGET[bucket] ?? 2;
 
     if ((hostCounts.get(host) || 0) >= hostCap) return false;
-
     if (!relaxed && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
 
     return true;
@@ -662,9 +662,13 @@ function diversifyRankedNewsSources(
   const register = (item: RankedNewsSourceItem) => {
     const host = getHostFromUrl(String(item.url || ""));
     const bucket = getPerspectiveBucket(host);
+    const region = getRegion(host);
 
     hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
     bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
+    if (region) {
+      regionCounts.set(region, (regionCounts.get(region) || 0) + 1);
+    }
   };
 
   const pickOne = (
@@ -675,28 +679,70 @@ function diversifyRankedNewsSources(
     if (idx === -1) return false;
 
     const [chosen] = remaining.splice(idx, 1);
-
     register(chosen);
     selected.push(chosen);
-
     return true;
   };
 
-  // 1️⃣ 대형 언론사 우선 분배
-  for (const bucket of Object.keys(BUCKET_TARGET) as PerspectiveBucket[]) {
+  while ((regionCounts.get("global") || 0) < MIN_REGION_TARGET.global && selected.length < limit) {
+    if (
+      !pickOne((item) => {
+        const host = getHostFromUrl(String(item.url || ""));
+        return findMediaMeta(host)?.region === "global" && isPreferredMajorOutlet(host);
+      })
+    ) {
+      if (
+        !pickOne((item) => {
+          const host = getHostFromUrl(String(item.url || ""));
+          return findMediaMeta(host)?.region === "global";
+        }, true)
+      ) {
+        break;
+      }
+    }
+  }
+    while ((regionCounts.get("kr") || 0) < MIN_REGION_TARGET.kr && selected.length < limit) {
+    if (
+      !pickOne((item) => {
+        const host = getHostFromUrl(String(item.url || ""));
+        return findMediaMeta(host)?.region === "kr" && isPreferredMajorOutlet(host);
+      })
+    ) {
+      if (
+        !pickOne((item) => {
+          const host = getHostFromUrl(String(item.url || ""));
+          return findMediaMeta(host)?.region === "kr";
+        }, true)
+      ) {
+        break;
+      }
+    }
+  }
+
+  for (const bucket of [
+    "kr-progressive",
+    "kr-conservative",
+    "kr-neutral",
+    "global-neutral",
+    "global-progressive",
+    "global-conservative",
+  ] as PerspectiveBucket[]) {
     if (selected.length >= limit) break;
 
     pickOne((item) => {
       const host = getHostFromUrl(String(item.url || ""));
-      return (
-        getPerspectiveBucket(host) === bucket &&
-        isPreferredMajorOutlet(host)
-      );
+      return getPerspectiveBucket(host) === bucket && isPreferredMajorOutlet(host);
     });
   }
 
-  // 2️⃣ 일반 분배
-  for (const bucket of Object.keys(BUCKET_TARGET) as PerspectiveBucket[]) {
+  for (const bucket of [
+    "kr-progressive",
+    "kr-conservative",
+    "kr-neutral",
+    "global-neutral",
+    "global-progressive",
+    "global-conservative",
+  ] as PerspectiveBucket[]) {
     if (selected.length >= limit) break;
 
     pickOne((item) => {
@@ -705,7 +751,6 @@ function diversifyRankedNewsSources(
     });
   }
 
-  // 3️⃣ 남은 슬롯 채우기
   while (selected.length < limit && remaining.length) {
     if (!pickOne(() => true)) {
       if (!pickOne(() => true, true)) break;
@@ -776,7 +821,6 @@ function scoreNewsSource(
   if (BAD_SNIPPET_PATTERNS.some((re) => re.test(snippet))) score -= 80;
 
   try {
-    const u = new URL(url);
     const host = getHostFromUrl(url);
 
     score += getMajorOutletBoost(host);
@@ -955,14 +999,9 @@ function mapSerperItem(raw: any, origin: SourceOrigin): RankedNewsSourceItem {
 }
 
 function buildPreferredOutletQuery(query: string) {
-  return `${query} (site:hani.co.kr OR site:khan.co.kr OR site:donga.com OR site:chosun.com OR site:joongang.co.kr OR site:hankookilbo.com OR site:seoul.co.kr OR site:yonhapnews.co.kr OR site:yna.co.kr OR site:ytn.co.kr OR site:kbs.co.kr OR site:imbc.com OR site:mbc.co.kr OR site:sbs.co.kr OR site:news1.kr OR site:newsis.com OR site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:bbc.com OR site:cnn.com OR site:nytimes.com OR site:theguardian.com OR site:wsj.com OR site:ft.com OR site:economist.com)`;
+  return `${query} (site:hani.co.kr OR site:khan.co.kr OR site:donga.com OR site:chosun.com OR site:joongang.co.kr OR site:hankookilbo.com OR site:seoul.co.kr OR site:yonhapnews.co.kr OR site:yna.co.kr OR site:ytn.co.kr OR site:kbs.co.kr OR site:imbc.com OR site:mbc.co.kr OR site:sbs.co.kr OR site:newsis.com OR site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:bbc.com OR site:cnn.com OR site:nytimes.com OR site:theguardian.com OR site:wsj.com OR site:ft.com OR site:economist.com)`;
 }
 
-/**
- * ✅ Serper.dev News 검색
- * - 실제 기사 URL을 "최소 minCount"개 이상 최대한 보장
- * - 반환 최대 10개(기사 링크), 부족하면 완화 필터로 보충
- */
 export async function fetchNewsSourcesSerper(
   query: string,
   minCount = 3
@@ -972,19 +1011,34 @@ export async function fetchNewsSourcesSerper(
 
   const need = Math.max(minCount, 3);
 
-  // 1) /news
-  const newsData = await serperPost("news", apiKey, {
+  const newsKR = await serperPost("news", apiKey, {
     q: query,
     gl: "kr",
     hl: "ko",
+    num: 16,
+  });
+
+  const newsUS = await serperPost("news", apiKey, {
+    q: query,
+    gl: "us",
+    hl: "en",
+    num: 16,
+  });
+
+  const newsGlobal = await serperPost("news", apiKey, {
+    q: `${query} global`,
+    gl: "us",
+    hl: "en",
+    num: 16,
+  });
+
+  const preferredSearchData = await serperPost("search", apiKey, {
+    q: buildPreferredOutletQuery(query),
+    gl: "us",
+    hl: "en",
     num: 20,
   });
 
-  const fromNews: RankedNewsSourceItem[] = (newsData?.news || []).map((n: any) =>
-    mapSerperItem(n, "news")
-  );
-
-  // 2) /search 일반 보충
   const searchData = await serperPost("search", apiKey, {
     q: query,
     gl: "kr",
@@ -992,30 +1046,39 @@ export async function fetchNewsSourcesSerper(
     num: 20,
   });
 
-  const fromSearch: RankedNewsSourceItem[] = (searchData?.organic || []).map((o: any) =>
-    mapSerperItem(o, "search")
+  const fromKR: RankedNewsSourceItem[] = (newsKR?.news || []).map((n: any) =>
+    mapSerperItem(n, "news")
   );
 
-  // 3) 허용 언론사 한정 보강 검색
-  const preferredSearchData = await serperPost("search", apiKey, {
-    q: buildPreferredOutletQuery(query),
-    gl: "kr",
-    hl: "ko",
-    num: 20,
-  });
+  const fromUS: RankedNewsSourceItem[] = (newsUS?.news || []).map((n: any) =>
+    mapSerperItem(n, "news")
+  );
+
+  const fromGlobal: RankedNewsSourceItem[] = (newsGlobal?.news || []).map((n: any) =>
+    mapSerperItem(n, "news")
+  );
 
   const fromPreferredSearch: RankedNewsSourceItem[] = (
     preferredSearchData?.organic || []
   ).map((o: any) => mapSerperItem(o, "search"));
 
-  // 4) 합치고 필터/랭킹
-  const combined = [...fromNews, ...fromSearch, ...fromPreferredSearch];
+  const fromSearch: RankedNewsSourceItem[] = (searchData?.organic || []).map((o: any) =>
+    mapSerperItem(o, "search")
+  );
+
+  const combined = [
+    ...fromKR,
+    ...fromUS,
+    ...fromGlobal,
+    ...fromPreferredSearch,
+    ...fromSearch,
+  ];
 
   const ranked = filterAndRankNewsSources(combined, 80);
   if (ranked.length >= need) return ranked.slice(0, 10);
 
   const looser = filterAndRankNewsSources(combined, 30);
-  if (looser.length) return looser.slice(0, Math.min(10, Math.max(need, looser.length)));
+  if (looser.length) return looser.slice(0, 10);
 
   const softFallback = uniqByHostAndTitle(
     uniqByUrl(combined).filter((item) => {
@@ -1028,7 +1091,7 @@ export async function fetchNewsSourcesSerper(
 
       return true;
     })
-  ).slice(0, Math.max(need, 6));
+  ).slice(0, 10);
 
   return softFallback.map(({ _score, _origin, ...rest }) => rest);
 }
