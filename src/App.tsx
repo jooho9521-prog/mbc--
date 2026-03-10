@@ -659,13 +659,22 @@ const App: React.FC = () => {
             evidenceArray
           );
           const safeNews = sanitizeNewsItems(news);
+          const safeSourceFeed = sanitizeNewsItems(
+            (sources || []).map((s: any) => ({
+              title: s?.title || "제목 없음",
+              uri: s?.url || "",
+              source: s?.source || "",
+              snippet: s?.snippet || "",
+              date: s?.date || "",
+            }))
+          );
           setState((prev) => ({
             ...prev,
             results: safeNews,
             analysis,
             isLoading: false,
           }));
-          setNewsSources(safeNews);
+          setNewsSources(safeSourceFeed.length ? safeSourceFeed : safeNews);
           setOsmuText(buildStrategyText(analysis, searchKeyword));
           return;
         }
