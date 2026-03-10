@@ -8,6 +8,8 @@
  * - snippet 필드 포함 (App.tsx의 evidenceArray/snippet 유지)
  * - 소셜/동영상 도메인, 검색/프록시 링크 차단
  * - 프론트 전용: AbortController로 타임아웃 적용
+ * - 대형 언론사만 허용
+ * - 국내/해외 + 진보/보수/중립 균형 분배 강화
  */
 
 export type NewsSourceItem = {
@@ -20,6 +22,278 @@ export type NewsSourceItem = {
   ts?: number;
 };
 
+type SourceOrigin = "news" | "search";
+type RankedNewsSourceItem = NewsSourceItem & {
+  _origin?: SourceOrigin;
+  _score?: number;
+};
+
+type MediaRegion = "kr" | "global";
+type MediaLeaning = "progressive" | "conservative" | "neutral";
+type PerspectiveBucket =
+  | "kr-progressive"
+  | "kr-conservative"
+  | "kr-neutral"
+  | "global-progressive"
+  | "global-conservative"
+  | "global-neutral"
+  | "general";
+
+type MediaMeta = {
+  region: MediaRegion;
+  leaning: MediaLeaning;
+  label: string;
+  preferred?: boolean;
+  maxPerHost?: number;
+  outletBoost?: number;
+};
+
+const MEDIA_META: Record<string, MediaMeta> = {
+  // 국내 진보
+  "hani.co.kr": {
+    region: "kr",
+    leaning: "progressive",
+    label: "한겨레",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 170,
+  },
+  "khan.co.kr": {
+    region: "kr",
+    leaning: "progressive",
+    label: "경향신문",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 162,
+  },
+
+  // 국내 보수
+  "donga.com": {
+    region: "kr",
+    leaning: "conservative",
+    label: "동아일보",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 170,
+  },
+  "chosun.com": {
+    region: "kr",
+    leaning: "conservative",
+    label: "조선일보",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 164,
+  },
+  "joongang.co.kr": {
+    region: "kr",
+    leaning: "conservative",
+    label: "중앙일보",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 162,
+  },
+  "mk.co.kr": {
+    region: "kr",
+    leaning: "conservative",
+    label: "매일경제",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+  "hankyung.com": {
+    region: "kr",
+    leaning: "conservative",
+    label: "한국경제",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+  "munhwa.com": {
+    region: "kr",
+    leaning: "conservative",
+    label: "문화일보",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 146,
+  },
+
+  // 국내 중립
+  "hankookilbo.com": {
+    region: "kr",
+    leaning: "neutral",
+    label: "한국일보",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+  "seoul.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "서울신문",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 148,
+  },
+  "yonhapnews.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "연합뉴스",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 164,
+  },
+  "yna.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "연합뉴스",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 164,
+  },
+  "ytn.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "YTN",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 165,
+  },
+  "kbs.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "KBS",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 152,
+  },
+  "imbc.com": {
+    region: "kr",
+    leaning: "neutral",
+    label: "MBC",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 152,
+  },
+  "mbc.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "MBC",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 152,
+  },
+  "sbs.co.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "SBS",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 152,
+  },
+  "news1.kr": {
+    region: "kr",
+    leaning: "neutral",
+    label: "뉴스1",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 148,
+  },
+  "newsis.com": {
+    region: "kr",
+    leaning: "neutral",
+    label: "뉴시스",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 144,
+  },
+
+  // 해외 중립
+  "reuters.com": {
+    region: "global",
+    leaning: "neutral",
+    label: "Reuters",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 166,
+  },
+  "apnews.com": {
+    region: "global",
+    leaning: "neutral",
+    label: "AP",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 164,
+  },
+  "bloomberg.com": {
+    region: "global",
+    leaning: "neutral",
+    label: "Bloomberg",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 166,
+  },
+  "bbc.com": {
+    region: "global",
+    leaning: "neutral",
+    label: "BBC",
+    preferred: true,
+    maxPerHost: 2,
+    outletBoost: 166,
+  },
+  "cnn.com": {
+    region: "global",
+    leaning: "neutral",
+    label: "CNN",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+
+  // 해외 진보
+  "nytimes.com": {
+    region: "global",
+    leaning: "progressive",
+    label: "New York Times",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 156,
+  },
+  "theguardian.com": {
+    region: "global",
+    leaning: "progressive",
+    label: "The Guardian",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+
+  // 해외 보수
+  "wsj.com": {
+    region: "global",
+    leaning: "conservative",
+    label: "Wall Street Journal",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 156,
+  },
+  "ft.com": {
+    region: "global",
+    leaning: "conservative",
+    label: "Financial Times",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 154,
+  },
+  "economist.com": {
+    region: "global",
+    leaning: "conservative",
+    label: "The Economist",
+    preferred: true,
+    maxPerHost: 1,
+    outletBoost: 152,
+  },
+};
+
 /** -----------------------------
  *  Blocklist
  * ------------------------------ */
@@ -28,6 +302,7 @@ export const BLOCKED_DOMAINS = [
   "google.co.kr",
   "m.google.com",
   "news.google.co.kr",
+  "news.google.com",
   "tiktok.com",
   "youtube.com",
   "youtube-nocookie.com",
@@ -47,7 +322,6 @@ export const BLOCKED_DOMAINS = [
   "t.me",
   "namu.wiki",
   "wikipedia.org",
-  "news.google.com",
   "search.naver.com",
   "m.search.naver.com",
   "section.blog.naver.com",
@@ -90,6 +364,17 @@ function cleanInlineText(text: string) {
   return (text || "")
     .replace(/\s+/g, " ")
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
+
+function normalizeTitleForDedupe(title: string) {
+  return cleanInlineText(title)
+    .toLowerCase()
+    .replace(/[“”"'‘’`]/g, "")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\([^)]+\)/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -136,13 +421,11 @@ export function parseDateToTimestamp(input?: string): number | undefined {
   const raw = (input || "").trim();
   if (!raw) return undefined;
 
-  // 1) Date.parse 가능한 경우
   const direct = Date.parse(raw);
   if (!Number.isNaN(direct)) return direct;
 
   const s = raw.toLowerCase();
 
-  // 2) English relative
   const en = s.match(/(\d+)\s*(minute|minutes|hour|hours|day|days)\s*ago/);
   if (en) {
     const n = Number(en[1]);
@@ -154,7 +437,6 @@ export function parseDateToTimestamp(input?: string): number | undefined {
     }
   }
 
-  // 3) Korean relative
   if (s.includes("방금") || s.includes("just now")) return Date.now();
   const ko = raw.match(/(\d+)\s*(분|시간|일)\s*전/);
   if (ko) {
@@ -202,6 +484,19 @@ const uniqByUrl = <T extends NewsSourceItem>(items: T[]): T[] => {
   });
 };
 
+const uniqByHostAndTitle = <T extends NewsSourceItem>(items: T[]): T[] => {
+  const seen = new Set<string>();
+  return items.filter((it) => {
+    const host = getHostFromUrl(String(it.url || ""));
+    const title = normalizeTitleForDedupe(String(it.title || ""));
+    if (!host || !title) return false;
+    const key = `${host}__${title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 /** -----------------------------
  *  URL filtering
  * ------------------------------ */
@@ -222,7 +517,6 @@ export const BAD_INCLUDES = [
   "kin.naver.com",
   "post.naver.com",
 ];
-
 
 const ARTICLE_PATH_HINTS = [
   "/article/",
@@ -273,114 +567,9 @@ const NON_ARTICLE_PATTERNS = [
 const PORTALISH_TITLE_PATTERNS = [/(검색|모아보기|바로가기|더보기)/i, /(google|naver|daum)\s*(news|검색)/i];
 
 const BAD_SNIPPET_PATTERNS = [/(실시간|인기기사|많이 본|더보기)/i, /(검색 결과|관련 검색어)/i];
-
-const MAJOR_OUTLET_BOOSTS: Record<string, number> = {
-  "hani.co.kr": 170,
-  "donga.com": 170,
-  "ytn.co.kr": 165,
-  "bbc.com": 165,
-  "reuters.com": 165,
-  "bloomberg.com": 165,
-  "yonhapnews.co.kr": 162,
-  "joongang.co.kr": 156,
-  "chosun.com": 156,
-  "khan.co.kr": 154,
-  "mk.co.kr": 152,
-  "hankyung.com": 152,
-  "kbs.co.kr": 150,
-  "imbc.com": 150,
-  "sbs.co.kr": 150,
-  "newsis.com": 138,
-  "munhwa.com": 136,
-  "segye.com": 134,
-  "edaily.co.kr": 116,
-};
-
-const PREFERRED_MAJOR_HOSTS = [
-  "hani.co.kr",
-  "donga.com",
-  "ytn.co.kr",
-  "bbc.com",
-  "reuters.com",
-  "bloomberg.com",
-  "yonhapnews.co.kr",
-  "joongang.co.kr",
-  "chosun.com",
-  "khan.co.kr",
-  "mk.co.kr",
-  "hankyung.com",
-  "kbs.co.kr",
-  "imbc.com",
-  "sbs.co.kr",
-  "newsis.com",
-  "munhwa.com",
-  "segye.com",
-];
-
-const LOW_PRIORITY_HOST_PENALTIES: Record<string, number> = {
-  "g-enews.com": 95,
-  "g-enews.co.kr": 95,
-  "marketin.edaily.co.kr": 85,
-  "edaily.co.kr": 20,
-  "jnilbo.com": 90,
-  "theguru.co.kr": 85,
-  "newstomato.com": 75,
-  "newsway.co.kr": 70,
-  "newsprime.co.kr": 70,
-  "etoday.co.kr": 65,
-  "investing.com": 200,
-  "cleantechnica.com": 200,
-  "teslarati.com": 200,
-  "teslaaccessories.com": 200,
-  "swotpal.com": 300,
-  "youtube.com": 400,
-  "x.com": 400,
-  "twitter.com": 400,
-  "news.mt.co.kr": 55,
-};
-
-const ALLOWED_MAJOR_HOSTS = [
-  "hani.co.kr",
-  "khan.co.kr",
-  "donga.com",
-  "chosun.com",
-  "joongang.co.kr",
-  "munhwa.com",
-  "mk.co.kr",
-  "hankyung.com",
-  "yonhapnews.co.kr",
-  "ytn.co.kr",
-  "kbs.co.kr",
-  "imbc.com",
-  "sbs.co.kr",
-  "newsis.com",
-  "bbc.com",
-  "reuters.com",
-  "bloomberg.com",
-  "cnn.com",
-  "nytimes.com",
-  "wsj.com",
-  "ft.com",
-];
-
-const EXCLUDED_REPEATED_HOSTS = [
-  "news.nate.com",
-  "digitaltoday.co.kr",
-  "marketin.edaily.co.kr",
-  "g-enews.com",
-  "inilbo.com",
-  "munhwa.com",
-];
-
-const HOST_CAP_OVERRIDES: Record<string, number> = {
-  "hani.co.kr": 2,
-  "donga.com": 2,
-  "ytn.co.kr": 2,
-  "bbc.com": 2,
-  "reuters.com": 2,
-  "bloomberg.com": 2,
-  "yonhapnews.co.kr": 2,
-};
+/** -----------------------------
+ *  Host helpers
+ * ------------------------------ */
 
 function getHostFromUrl(url: string) {
   try {
@@ -393,82 +582,130 @@ function getHostFromUrl(url: string) {
 function matchHost(host: string, domain: string) {
   return host === domain || host.endsWith(`.${domain}`);
 }
-function isAllowedMajorOutletHost(host: string) {
-  return ALLOWED_MAJOR_HOSTS.some((domain) => matchHost(host, domain));
-}
 
-function isExcludedRepeatedHost(host: string) {
-  return EXCLUDED_REPEATED_HOSTS.some((domain) => matchHost(host, domain));
+function findMediaMeta(host: string): MediaMeta | undefined {
+  for (const [domain, meta] of Object.entries(MEDIA_META)) {
+    if (matchHost(host, domain)) return meta;
+  }
+  return undefined;
 }
-
 
 function getMajorOutletBoost(host: string) {
-  for (const [domain, boost] of Object.entries(MAJOR_OUTLET_BOOSTS)) {
-    if (matchHost(host, domain)) return boost;
-  }
-  return 0;
+  const meta = findMediaMeta(host);
+  return meta?.outletBoost || 0;
 }
 
 function isPreferredMajorOutlet(host: string) {
-  return PREFERRED_MAJOR_HOSTS.some((domain) => matchHost(host, domain));
+  const meta = findMediaMeta(host);
+  return !!meta?.preferred;
 }
 
-function getLowPriorityPenalty(host: string) {
-  for (const [domain, penalty] of Object.entries(LOW_PRIORITY_HOST_PENALTIES)) {
-    if (matchHost(host, domain)) return penalty;
-  }
-  return 0;
+function getHostCap(host: string) {
+  const meta = findMediaMeta(host);
+  return meta?.maxPerHost ?? 1;
 }
 
-function getPerspectiveBucket(host: string) {
-  if (["hani.co.kr", "khan.co.kr", "ohmynews.com"].some((d) => matchHost(host, d))) return "progressive";
-  if (["donga.com", "chosun.com", "joongang.co.kr", "munhwa.com", "mk.co.kr", "hankyung.com"].some((d) => matchHost(host, d))) return "conservative";
-  if (["ytn.co.kr", "yonhapnews.co.kr", "kbs.co.kr", "imbc.com", "sbs.co.kr", "newsis.com"].some((d) => matchHost(host, d))) return "broadcast";
-  if (["bbc.com", "reuters.com", "bloomberg.com", "cnn.com", "nytimes.com", "wsj.com", "ft.com"].some((d) => matchHost(host, d))) return "global";
-  return "general";
+function isAllowedMajorOutletHost(host: string) {
+  return !!findMediaMeta(host);
 }
 
-function diversifyRankedNewsSources(items: Array<NewsSourceItem & { _origin?: "news" | "search"; _score?: number }>, limit = 10) {
+/** -----------------------------
+ *  Perspective bucket
+ * ------------------------------ */
+
+function getPerspectiveBucket(host: string): PerspectiveBucket {
+  const meta = findMediaMeta(host);
+  if (!meta) return "general";
+
+  const key = `${meta.region}-${meta.leaning}` as PerspectiveBucket;
+  return key;
+}
+
+/** -----------------------------
+ *  Diversify logic
+ * ------------------------------ */
+
+function diversifyRankedNewsSources(
+  items: RankedNewsSourceItem[],
+  limit = 10
+) {
   const hostCounts = new Map<string, number>();
-  const bucketCounts = new Map<string, number>();
-  const selected: Array<NewsSourceItem & { _origin?: "news" | "search"; _score?: number }> = [];
+  const bucketCounts = new Map<PerspectiveBucket, number>();
+
+  const selected: RankedNewsSourceItem[] = [];
   const remaining = [...items];
 
-  const canPick = (item: NewsSourceItem & { _origin?: "news" | "search"; _score?: number }, relaxed = false) => {
+  const BUCKET_TARGET: Record<PerspectiveBucket, number> = {
+    "kr-progressive": 2,
+    "kr-conservative": 2,
+    "kr-neutral": 2,
+    "global-neutral": 2,
+    "global-progressive": 1,
+    "global-conservative": 1,
+    general: 3,
+  };
+
+  const canPick = (item: RankedNewsSourceItem, relaxed = false) => {
     const host = getHostFromUrl(String(item.url || ""));
     const bucket = getPerspectiveBucket(host);
-    const hostCap = HOST_CAP_OVERRIDES[host] ?? 1;
-    const bucketCap = bucket === "general" ? 4 : 3;
+
+    const hostCap = getHostCap(host);
+    const bucketCap = BUCKET_TARGET[bucket] ?? 2;
+
     if ((hostCounts.get(host) || 0) >= hostCap) return false;
+
     if (!relaxed && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
+
     return true;
   };
 
-  const pickOne = (predicate: (item: NewsSourceItem & { _origin?: "news" | "search"; _score?: number }) => boolean, relaxed = false) => {
-    const idx = remaining.findIndex((item) => predicate(item) && canPick(item, relaxed));
-    if (idx === -1) return false;
-    const [chosen] = remaining.splice(idx, 1);
-    const host = getHostFromUrl(String(chosen.url || ""));
+  const register = (item: RankedNewsSourceItem) => {
+    const host = getHostFromUrl(String(item.url || ""));
     const bucket = getPerspectiveBucket(host);
+
     hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
     bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
+  };
+
+  const pickOne = (
+    predicate: (item: RankedNewsSourceItem) => boolean,
+    relaxed = false
+  ) => {
+    const idx = remaining.findIndex((item) => predicate(item) && canPick(item, relaxed));
+    if (idx === -1) return false;
+
+    const [chosen] = remaining.splice(idx, 1);
+
+    register(chosen);
     selected.push(chosen);
+
     return true;
   };
 
-  for (const bucket of ["progressive", "conservative", "broadcast", "global"]) {
+  // 1️⃣ 대형 언론사 우선 분배
+  for (const bucket of Object.keys(BUCKET_TARGET) as PerspectiveBucket[]) {
     if (selected.length >= limit) break;
+
     pickOne((item) => {
       const host = getHostFromUrl(String(item.url || ""));
-      return getPerspectiveBucket(host) === bucket && isPreferredMajorOutlet(host);
+      return (
+        getPerspectiveBucket(host) === bucket &&
+        isPreferredMajorOutlet(host)
+      );
     });
   }
 
-  for (const bucket of ["progressive", "conservative", "broadcast", "global"]) {
+  // 2️⃣ 일반 분배
+  for (const bucket of Object.keys(BUCKET_TARGET) as PerspectiveBucket[]) {
     if (selected.length >= limit) break;
-    pickOne((item) => getPerspectiveBucket(getHostFromUrl(String(item.url || ""))) === bucket);
+
+    pickOne((item) => {
+      const host = getHostFromUrl(String(item.url || ""));
+      return getPerspectiveBucket(host) === bucket;
+    });
   }
 
+  // 3️⃣ 남은 슬롯 채우기
   while (selected.length < limit && remaining.length) {
     if (!pickOne(() => true)) {
       if (!pickOne(() => true, true)) break;
@@ -478,21 +715,40 @@ function diversifyRankedNewsSources(items: Array<NewsSourceItem & { _origin?: "n
   return selected;
 }
 
+/** -----------------------------
+ *  Article URL detection
+ * ------------------------------ */
+
 export function isNewsLikeUrl(url: string) {
   if (!isLikelyArticleUrlSoft(url)) return false;
+
   try {
     const u = new URL(url);
     const path = (u.pathname || "").toLowerCase();
+
     if (!path || path === "/") return false;
+
     if (NON_ARTICLE_PATTERNS.some((bad) => path.includes(bad))) return false;
-    return ARTICLE_PATH_HINTS.some((hint) => path.includes(hint)) || ARTICLE_SLUG_RE.test(path);
+
+    return (
+      ARTICLE_PATH_HINTS.some((hint) => path.includes(hint)) ||
+      ARTICLE_SLUG_RE.test(path)
+    );
   } catch {
     return false;
   }
 }
 
-function scoreNewsSource(item: NewsSourceItem & { _origin?: "news" | "search" }, origin: "news" | "search") {
+/** -----------------------------
+ *  Scoring
+ * ------------------------------ */
+
+function scoreNewsSource(
+  item: RankedNewsSourceItem,
+  origin: SourceOrigin
+) {
   let score = 0;
+
   const url = String(item.url || "").trim();
   const title = cleanInlineText(item.title || "");
   const snippet = cleanInlineText(item.snippet || "");
@@ -502,68 +758,95 @@ function scoreNewsSource(item: NewsSourceItem & { _origin?: "news" | "search" },
   else return -9999;
 
   if (isNewsLikeUrl(url)) score += 80;
+
   if (origin === "news") score += 25;
+
   if (item.ts) score += 12;
+
   if (item.source) score += 10;
+
   if (title.length >= 18) score += 18;
+
   if (snippet.length >= 60) score += 18;
+
   if (snippet.length >= 120) score += 10;
 
   if (PORTALISH_TITLE_PATTERNS.some((re) => re.test(title))) score -= 120;
+
   if (BAD_SNIPPET_PATTERNS.some((re) => re.test(snippet))) score -= 80;
 
   try {
     const u = new URL(url);
-    const host = (u.hostname || "").replace(/^www\./, "").toLowerCase();
-    const path = (u.pathname || "").toLowerCase();
-    if (NON_ARTICLE_PATTERNS.some((bad) => path.includes(bad))) score -= 120;
-    if (u.searchParams.toString().length > 120) score -= 15;
+    const host = getHostFromUrl(url);
+
     score += getMajorOutletBoost(host);
-    score -= getLowPriorityPenalty(host);
-    if (isPreferredMajorOutlet(host)) score += 55;
+
+    if (isPreferredMajorOutlet(host)) score += 50;
 
     const bucket = getPerspectiveBucket(host);
-    if (bucket === "progressive" || bucket === "conservative" || bucket === "broadcast" || bucket === "global") {
-      score += 8;
-    }
+
+    if (bucket !== "general") score += 8;
   } catch {}
 
   return score;
 }
 
-export function filterAndRankNewsSources(items: Array<NewsSourceItem & { _origin?: "news" | "search" }>, minScore = 80) {
-  const ranked = uniqByUrl(items)
-    .filter((item) => {
-      const url = String(item.url || "");
-      const host = getHostFromUrl(url);
-      if (!host) return false;
-      if (isBlockedDomain(url) || isBlockedByKeyword(url)) return false;
-      if (BAD_HOSTS.some((b) => host === b || host.endsWith("." + b))) return false;
-      if (isExcludedRepeatedHost(host)) return false;
-      return isAllowedMajorOutletHost(host);
-    })
-    .map((item) => ({
-      ...item,
-      _score: scoreNewsSource(item, item._origin || "search"),
-    }))
-    .filter((item) => item._score >= minScore)
-    .sort((a, b) => {
-      const hostA = getHostFromUrl(String(a.url || ""));
-      const hostB = getHostFromUrl(String(b.url || ""));
-      const majorDiff = getMajorOutletBoost(hostB) - getMajorOutletBoost(hostA);
-      if (majorDiff !== 0) return majorDiff;
-      if (b._score !== a._score) return b._score - a._score;
-      return (b.ts || 0) - (a.ts || 0);
-    });
+/** -----------------------------
+ *  Ranking pipeline
+ * ------------------------------ */
+
+export function filterAndRankNewsSources(
+  items: RankedNewsSourceItem[],
+  minScore = 80
+) {
+  const ranked = uniqByHostAndTitle(
+    uniqByUrl(items)
+      .filter((item) => {
+        const url = String(item.url || "");
+        const host = getHostFromUrl(url);
+
+        if (!host) return false;
+
+        if (isBlockedDomain(url) || isBlockedByKeyword(url)) return false;
+
+        if (!isAllowedMajorOutletHost(host)) return false;
+
+        return true;
+      })
+      .map((item) => ({
+        ...item,
+        _score: scoreNewsSource(item, item._origin || "search"),
+      }))
+      .filter((item) => (item._score || 0) >= minScore)
+      .sort((a, b) => {
+        const hostA = getHostFromUrl(String(a.url || ""));
+        const hostB = getHostFromUrl(String(b.url || ""));
+
+        const majorDiff = getMajorOutletBoost(hostB) - getMajorOutletBoost(hostA);
+
+        if (majorDiff !== 0) return majorDiff;
+
+        if ((b._score || 0) !== (a._score || 0)) return (b._score || 0) - (a._score || 0);
+
+        return (b.ts || 0) - (a.ts || 0);
+      })
+  );
 
   return diversifyRankedNewsSources(ranked, 10).map(({ _score, _origin, ...rest }) => rest);
 }
+/** -----------------------------
+ *  Bad hosts
+ * ------------------------------ */
 
 const BAD_HOSTS = [
   "vertexaisearch.cloud.google.com",
   "vertexaisearch.googleapis.com",
   "cloud.google.com",
 ];
+
+/** -----------------------------
+ *  Article URL 판별
+ * ------------------------------ */
 
 // ✅ 1차(엄격) 기사 URL 판별
 const isLikelyArticleUrlStrict = (url: string) => {
@@ -578,6 +861,9 @@ const isLikelyArticleUrlStrict = (url: string) => {
 
     const path = u.pathname || "";
     if (path === "/" || path.length < 2) return false;
+
+    if (NON_ARTICLE_PATTERNS.some((bad) => path.toLowerCase().includes(bad))) return false;
+
     return true;
   } catch {
     return false;
@@ -597,6 +883,7 @@ const isLikelyArticleUrlSoft = (url: string) => {
 
     const path = u.pathname || "";
     if (!path || path === "/") return false;
+
     return true;
   } catch {
     return false;
@@ -606,9 +893,11 @@ const isLikelyArticleUrlSoft = (url: string) => {
 /** -----------------------------
  *  Serper client
  * ------------------------------ */
+
 async function serperPost(endpoint: "news" | "search", apiKey: string, body: any) {
   const controller = new AbortController();
   const t = window.setTimeout(() => controller.abort(), 12000);
+
   try {
     const resp = await fetch(`https://google.serper.dev/${endpoint}`, {
       method: "POST",
@@ -619,7 +908,9 @@ async function serperPost(endpoint: "news" | "search", apiKey: string, body: any
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+
     if (!resp.ok) return null;
+
     return resp.json();
   } catch {
     return null;
@@ -631,6 +922,7 @@ async function serperPost(endpoint: "news" | "search", apiKey: string, body: any
 function getSerperKey(): string {
   const env = (import.meta as any)?.env || {};
   const winEnv = (window as any)?.process?.env || {};
+
   const candidates = [
     env?.VITE_SERPER_API_KEY,
     env?.SERPER_API_KEY,
@@ -650,12 +942,31 @@ function getSerperKey(): string {
   return "";
 }
 
+function mapSerperItem(raw: any, origin: SourceOrigin): RankedNewsSourceItem {
+  const normUrl = normalizeNewsUrl(raw?.link || "");
+  return {
+    title: cleanInlineText(raw?.title || "제목 없음"),
+    url: normUrl,
+    source: cleanInlineText(raw?.source || ""),
+    snippet: cleanInlineText(raw?.snippet || raw?.description || ""),
+    ...normalizeDateForDisplay(raw?.date || ""),
+    _origin: origin,
+  };
+}
+
+function buildPreferredOutletQuery(query: string) {
+  return `${query} (site:hani.co.kr OR site:khan.co.kr OR site:donga.com OR site:chosun.com OR site:joongang.co.kr OR site:hankookilbo.com OR site:seoul.co.kr OR site:yonhapnews.co.kr OR site:yna.co.kr OR site:ytn.co.kr OR site:kbs.co.kr OR site:imbc.com OR site:mbc.co.kr OR site:sbs.co.kr OR site:news1.kr OR site:newsis.com OR site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:bbc.com OR site:cnn.com OR site:nytimes.com OR site:theguardian.com OR site:wsj.com OR site:ft.com OR site:economist.com)`;
+}
+
 /**
  * ✅ Serper.dev News 검색
  * - 실제 기사 URL을 "최소 minCount"개 이상 최대한 보장
- * - 반환 최대 10개(기사 링크), 부족하면 '더보기' 링크로 채움
+ * - 반환 최대 10개(기사 링크), 부족하면 완화 필터로 보충
  */
-export async function fetchNewsSourcesSerper(query: string, minCount = 3): Promise<NewsSourceItem[]> {
+export async function fetchNewsSourcesSerper(
+  query: string,
+  minCount = 3
+): Promise<NewsSourceItem[]> {
   const apiKey = getSerperKey();
   if (!apiKey) return [];
 
@@ -669,19 +980,11 @@ export async function fetchNewsSourcesSerper(query: string, minCount = 3): Promi
     num: 20,
   });
 
-  const fromNews = (newsData?.news || []).map((n: any) => {
-    const normUrl = normalizeNewsUrl(n?.link || "");
-    return {
-      title: cleanInlineText(n?.title || "제목 없음"),
-      url: normUrl,
-      source: cleanInlineText(n?.source || ""),
-      snippet: cleanInlineText(n?.snippet || n?.description || ""),
-      ...normalizeDateForDisplay(n?.date || ""),
-      _origin: "news" as const,
-    };
-  });
+  const fromNews: RankedNewsSourceItem[] = (newsData?.news || []).map((n: any) =>
+    mapSerperItem(n, "news")
+  );
 
-  // 2) /search로 보충
+  // 2) /search 일반 보충
   const searchData = await serperPost("search", apiKey, {
     q: query,
     gl: "kr",
@@ -689,52 +992,43 @@ export async function fetchNewsSourcesSerper(query: string, minCount = 3): Promi
     num: 20,
   });
 
-  // 2-1) 대형 언론사 보강 검색
+  const fromSearch: RankedNewsSourceItem[] = (searchData?.organic || []).map((o: any) =>
+    mapSerperItem(o, "search")
+  );
+
+  // 3) 허용 언론사 한정 보강 검색
   const preferredSearchData = await serperPost("search", apiKey, {
-    q: `${query} (site:hani.co.kr OR site:donga.com OR site:ytn.co.kr OR site:bbc.com OR site:reuters.com OR site:bloomberg.com OR site:yonhapnews.co.kr OR site:joongang.co.kr OR site:chosun.com OR site:khan.co.kr OR site:mk.co.kr OR site:hankyung.com OR site:kbs.co.kr OR site:imbc.com OR site:sbs.co.kr)`,
+    q: buildPreferredOutletQuery(query),
     gl: "kr",
     hl: "ko",
     num: 20,
   });
 
-  const fromSearch = (searchData?.organic || []).map((o: any) => {
-    const normUrl = normalizeNewsUrl(o?.link || "");
-    return {
-      title: cleanInlineText(o?.title || "제목 없음"),
-      url: normUrl,
-      source: cleanInlineText(o?.source || ""),
-      snippet: cleanInlineText(o?.snippet || o?.description || ""),
-      ...normalizeDateForDisplay(o?.date || ""),
-      _origin: "search" as const,
-    };
-  });
+  const fromPreferredSearch: RankedNewsSourceItem[] = (
+    preferredSearchData?.organic || []
+  ).map((o: any) => mapSerperItem(o, "search"));
 
-  const fromPreferredSearch = (preferredSearchData?.organic || []).map((o: any) => {
-    const normUrl = normalizeNewsUrl(o?.link || "");
-    return {
-      title: cleanInlineText(o?.title || "제목 없음"),
-      url: normUrl,
-      source: cleanInlineText(o?.source || ""),
-      snippet: cleanInlineText(o?.snippet || o?.description || ""),
-      ...normalizeDateForDisplay(o?.date || ""),
-      _origin: "search" as const,
-    };
-  });
-
-  // 3) 합치고 필터/랭킹
+  // 4) 합치고 필터/랭킹
   const combined = [...fromNews, ...fromSearch, ...fromPreferredSearch];
+
   const ranked = filterAndRankNewsSources(combined, 80);
   if (ranked.length >= need) return ranked.slice(0, 10);
 
   const looser = filterAndRankNewsSources(combined, 30);
   if (looser.length) return looser.slice(0, Math.min(10, Math.max(need, looser.length)));
 
-  const softFallback = uniqByUrl(combined)
-    .filter((item) => {
+  const softFallback = uniqByHostAndTitle(
+    uniqByUrl(combined).filter((item) => {
       const url = String(item.url || "");
-      return !!url && !isBlockedDomain(url) && !isBlockedByKeyword(url);
-    })
-    .slice(0, Math.max(need, 6));
+      const host = getHostFromUrl(url);
 
-  return softFallback;
+      if (!url || !host) return false;
+      if (isBlockedDomain(url) || isBlockedByKeyword(url)) return false;
+      if (!isAllowedMajorOutletHost(host)) return false;
+
+      return true;
+    })
+  ).slice(0, Math.max(need, 6));
+
+  return softFallback.map(({ _score, _origin, ...rest }) => rest);
 }
