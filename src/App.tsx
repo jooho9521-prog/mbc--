@@ -636,6 +636,16 @@ const App: React.FC = () => {
         );
 
           // 근거가 너무 부족하면 기존 모드로 폴백
+          const safeSourceFeed = sanitizeNewsItems(
+            (sources || []).map((s: any) => ({
+              title: s?.title || "제목 없음",
+              uri: s?.url || "",
+              source: s?.source || "",
+              snippet: s?.snippet || "",
+              date: s?.date || "",
+            }))
+          );
+
           if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
               searchKeyword,
@@ -648,7 +658,7 @@ const App: React.FC = () => {
               analysis,
               isLoading: false,
             }));
-            setNewsSources(safeNews);
+            setNewsSources(safeSourceFeed.length ? safeSourceFeed : safeNews);
             setOsmuText(buildStrategyText(analysis, searchKeyword));
             return;
           }
@@ -659,15 +669,6 @@ const App: React.FC = () => {
             evidenceArray
           );
           const safeNews = sanitizeNewsItems(news);
-          const safeSourceFeed = sanitizeNewsItems(
-            (sources || []).map((s: any) => ({
-              title: s?.title || "제목 없음",
-              uri: s?.url || "",
-              source: s?.source || "",
-              snippet: s?.snippet || "",
-              date: s?.date || "",
-            }))
-          );
           setState((prev) => ({
             ...prev,
             results: safeNews,

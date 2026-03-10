@@ -629,10 +629,18 @@ async function serperPost(endpoint: "news" | "search", apiKey: string, body: any
 }
 
 function getSerperKey(): string {
-  const fromEnv = (import.meta as any).env?.VITE_SERPER_API_KEY;
-  if (fromEnv) return String(fromEnv).trim();
+  const env = (import.meta as any).env || {};
+  const candidates = [
+    env?.VITE_SERPER_API_KEY,
+    env?.SERPER_API_KEY,
+    (window as any)?.process?.env?.VITE_SERPER_API_KEY,
+    (window as any)?.process?.env?.SERPER_API_KEY,
+  ];
 
-  // (옵션) 프론트에서 직접 입력/저장해서 쓰는 경우
+  for (const candidate of candidates) {
+    if (candidate) return String(candidate).trim();
+  }
+
   try {
     const fromLocal = localStorage.getItem("serper_api_key");
     if (fromLocal) return String(fromLocal).trim();
@@ -720,5 +728,12 @@ export async function fetchNewsSourcesSerper(query: string, minCount = 3): Promi
   const looser = filterAndRankNewsSources(combined, 30);
   if (looser.length) return looser.slice(0, Math.min(10, Math.max(need, looser.length)));
 
-  return [];
+  const softFallback = uniqByUrl(combined)
+    .filter((item) => {
+      const url = String(item.url || "");
+      return !!url && !isBlockedDomain(url) && !isBlockedByKeyword(url);
+    })
+    .slice(0, Math.max(need, 6));
+
+  return softFallback;
 }
