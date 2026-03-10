@@ -25,6 +25,7 @@ import {
   RefreshCcw,
   FileText,
   ImageDown,
+  Trash2,
 } from "lucide-react";
 
 interface Props {
@@ -195,6 +196,61 @@ ${compositionRules}
 `.trim();
 };
 
+
+const sanitizeCardHeadline = (text: string, fallback = "핵심 이슈 요약") => {
+  const cleaned = cleanHeadline(text)
+    .replace(/https?:\/\/[^\s]+/g, "")
+    .replace(/[\[\]\(\){}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const safe = cleaned || fallback;
+  return safe.length > 58 ? `${safe.slice(0, 58).trim()}` : safe;
+};
+
+const sanitizeCardBody = (text: string, fallback = "1. 추가 확인 필요") => {
+  const cleaned = cleanAndFormatText(text)
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-•*]\s*/, "").trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const normalized = line.replace(/^\d+\.\s*/, "").trim();
+      const expanded = normalized.length > 95 ? `${normalized.slice(0, 95).trim()}` : normalized;
+      return `${index + 1}. ${expanded}`;
+    })
+    .slice(0, 5);
+
+  return cleaned.length ? cleaned.join("\n") : fallback;
+};
+
+const parseCardResponse = (rawResponse: string, fallbackText: string) => {
+  let newTitle = "";
+  let newBody = "";
+  const parts = String(rawResponse || "").split("[BODY]");
+
+  if (parts.length >= 2) {
+    newTitle = parts[0].replace("[HEADLINE]", "").trim();
+    newBody = parts[1].trim();
+  } else {
+    const lines = String(rawResponse || "")
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+
+    if (lines.length > 0) {
+      newTitle = lines[0];
+      const bodyStartIndex = lines.findIndex((l) => /^\d+\./.test(l));
+      if (bodyStartIndex !== -1) newBody = lines.slice(bodyStartIndex).join("\n");
+      else if (lines.length > 1) newBody = lines.slice(1).join("\n");
+      else newBody = fallbackText;
+    }
+  }
+
+  return {
+    title: sanitizeCardHeadline(newTitle, fallbackText.split(/[.!?\n]/)[0] || "핵심 이슈 요약"),
+    body: sanitizeCardBody(newBody, sanitizeCardBody(fallbackText)),
+  };
+};
+
 /** ---------- Voice ---------- **/
 
 const GOOGLE_AI_VOICES = [
@@ -313,24 +369,72 @@ const IMAGE_STYLES = [
 
 /** ---------- Local Storage: Prompt Favorites ---------- **/
 
-const LS_FAV_KEY = "trendpulse_prompt_favorites_v1";
+type FavPrompt = {
+  id: string;
+  text: string;
+  createdAt: number;
+};
 
-const readFavs = (): string[] => {
+const LS_FAV_KEY = "trendpulse_prompt_favorites_v2";
+
+const readFavs = (): FavPrompt[] => {
   try {
     const raw = localStorage.getItem(LS_FAV_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.map((x) => String(x)) : [];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // v2: [{id,text,createdAt}]
+        if (parsed.length === 0) return [];
+        if (typeof parsed[0] === "object" && parsed[0]?.text) {
+          return parsed
+            .map((x: any) => ({
+              id: String(x.id || Date.now() + Math.random()),
+              text: String(x.text || ""),
+              createdAt: Number(x.createdAt || Date.now()),
+            }))
+            .filter((x: FavPrompt) => x.text.trim().length > 0)
+            .slice(0, 30);
+        }
+      }
+    }
+
+    // ✅ v1 마이그레이션: string[]
+    const oldRaw = localStorage.getItem("trendpulse_prompt_favorites_v1");
+    if (!oldRaw) return [];
+    const oldParsed = JSON.parse(oldRaw);
+    if (!Array.isArray(oldParsed)) return [];
+
+    const migrated: FavPrompt[] = oldParsed
+      .map((t: any, i: number) => ({
+        id: `m_${Date.now()}_${i}`,
+        text: String(t || ""),
+        createdAt: Date.now() - i,
+      }))
+      .filter((x) => x.text.trim().length > 0)
+      .slice(0, 30);
+
+    localStorage.setItem(LS_FAV_KEY, JSON.stringify(migrated));
+    return migrated;
   } catch {
     return [];
   }
 };
 
-const writeFavs = (arr: string[]) => {
+const writeFavs = (arr: FavPrompt[]) => {
   try {
-    localStorage.setItem(LS_FAV_KEY, JSON.stringify(arr.slice(0, 30)));
+    const trimmed = (arr || [])
+      .map((x) => ({
+        id: String(x.id || Date.now() + Math.random()),
+        text: String(x.text || "").trim(),
+        createdAt: Number(x.createdAt || Date.now()),
+      }))
+      .filter((x) => x.text.length > 0)
+      .slice(0, 30);
+    localStorage.setItem(LS_FAV_KEY, JSON.stringify(trimmed));
   } catch {}
 };
+
+
 
 /** ---------- Component ---------- **/
 
@@ -350,12 +454,14 @@ const ContentExpander: React.FC<Props> = ({
 
   const [cardHeadline, setCardHeadline] = useState("");
   const [cardSummary, setCardSummary] = useState(summary || "분석된 내용이 없습니다.");
-  const [cardImage, setCardImage] = useState(
-    "https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=1080&auto=format&fit=crop"
-  );
+  const [cardImage, setCardImage] = useState("");
 
   // ✅ 통합 프롬프트
   const [unifiedPrompt, setUnifiedPrompt] = useState<string>("");
+
+  // ✅ (결과) 배경 이미지 AI 프롬프트: AI가 최종으로 만든 프롬프트(읽기전용)
+  const [aiFinalImagePrompt, setAiFinalImagePrompt] = useState<string>("");
+
 
   // ✅ 스타일 선택
   const [selectedCategory, setSelectedCategory] = useState("auto");
@@ -363,7 +469,7 @@ const ContentExpander: React.FC<Props> = ({
   const isAutoMode = selectedCategory === "auto";
 
   // ✅ 프롬프트 즐겨찾기
-  const [favPrompts, setFavPrompts] = useState<string[]>(() => readFavs());
+  const [favPrompts, setFavPrompts] = useState<FavPrompt[]>(() => readFavs());
 
   // ✅ TTS
   const [selectedGoogleVoice, setSelectedGoogleVoice] = useState("Zephyr");
@@ -398,16 +504,18 @@ Task: Create a card news summary in KOREAN for enterprise usage.
 Rules:
 - Professional newsroom tone. Avoid casual expressions (e.g., "~있습니다", "~해요").
 - Use concise, factual style. No slang. No emoticons.
-- NO URLs.
+- NO URLs, NO source labels, NO portal names.
+- If uncertain, use cautious wording like "추가 확인 필요".
 
 Format:
 [HEADLINE]
-(Provocative but professional headline. Strictly NO NUMBERS at start.)
+(Professional headline. Strictly NO NUMBERS at start. Prefer 28~44 Korean chars when needed. Keep full meaning, do not truncate with ellipsis.)
 
 [BODY]
 (Write exactly 5 numbered bullet points (1. to 5.).
-Use "Noun-ending style" (개조식) like "~함", "~임", "~것" to keep it PROFESSIONAL and SHORT.
-Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
+Each bullet should be rich enough to preserve the full meaning of the analysis.
+Prefer 36~72 Korean chars per bullet when needed.
+Do not truncate with ellipsis. Each bullet should be a complete sentence or clause.)
 `.trim();
   }, []);
 
@@ -427,13 +535,13 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
   /** ✅ [핵심 FIX] AI 제목 추천: card state + expandedData.image.cardData 동시 업데이트 */
   const applyCardTextToState = useCallback(
     (title: string, body: string) => {
-      const t = cleanHeadline(title);
-      const b = cleanAndFormatText(body);
+      const fallbackTitle = (summary || keyword || "핵심 이슈 요약").split(/[.!?\n]/)[0];
+      const t = sanitizeCardHeadline(title, fallbackTitle);
+      const b = sanitizeCardBody(body, sanitizeCardBody(summary || "1. 추가 확인 필요"));
 
       setCardHeadline(t);
       setCardSummary(b);
 
-      // ✅ 화면에 실제로 렌더되는 expandedData도 함께 업데이트해야 “반응 없음” 문제가 해결됩니다.
       setExpandedData((prev) => {
         if (!prev.image) return prev;
         return {
@@ -448,7 +556,7 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
         };
       });
     },
-    [setExpandedData]
+    [keyword, setExpandedData, summary]
   );
 
   /** ✅ 제목만(또는 제목+본문) 생성: silent 옵션 */
@@ -462,34 +570,8 @@ Max 40-55 characters per line. Keep each bullet in a single line. No wrapping.)
       const baseContext = `키워드: ${keyword || ""}\n요약:\n${summary}`;
       const rawResponse = await generateExpandedContent(baseContext, "card", cardTextPrompt);
 
-      let newTitle = "";
-      let newBody = "";
-
-      const parts = rawResponse.split("[BODY]");
-      if (parts.length >= 2) {
-        newTitle = parts[0].replace("[HEADLINE]", "").trim();
-        newBody = parts[1].trim();
-      } else {
-        const lines = rawResponse.split("\n").filter((l) => l.trim() !== "");
-        if (lines.length > 0) {
-          newTitle = lines[0];
-          const bodyStartIndex = lines.findIndex((l) => /^\d+\./.test(l));
-          if (bodyStartIndex !== -1) newBody = lines.slice(bodyStartIndex).join("\n");
-          else if (lines.length > 1) newBody = lines.slice(1).join("\n");
-          else newBody = summary;
-        }
-      }
-
-      newTitle = cleanHeadline(newTitle);
-      newBody = cleanAndFormatText(newBody);
-
-      if (!newTitle || newTitle.length < 2) {
-        const firstLine = summary.split(/[.!?\n]/)[0];
-        newTitle = cleanHeadline(firstLine);
-      }
-      if (!newBody || newBody.length < 10) newBody = summary;
-
-      applyCardTextToState(newTitle, newBody);
+      const parsed = parseCardResponse(rawResponse, summary);
+      applyCardTextToState(parsed.title, parsed.body);
       if (!silent) onShowToast("✅ 제목/본문 반영 완료");
     } catch (e) {
       console.error("Title Gen Error:", e);
@@ -521,7 +603,7 @@ Rewrite BODY only in KOREAN.
 
 Rules:
 - Keep EXACTLY 5 numbered bullet points (1. to 5.)
-- One line per bullet (no wrapping)
+- Each bullet may be longer if needed, but must stay readable and complete
 - No URLs, no emoticons, no casual speech
 - Output ONLY the body text (no [HEADLINE], no extra labels)
 `.trim();
@@ -657,22 +739,53 @@ Rules:
   const isFav = useMemo(() => {
     const p = (unifiedPrompt || "").trim();
     if (!p) return false;
-    return favPrompts.includes(p);
+    return favPrompts.some((x) => x.text === p);
   }, [unifiedPrompt, favPrompts]);
 
   const toggleFavorite = () => {
-    const p = (unifiedPrompt || "").trim();
-    if (!p) {
-      onShowToast("프롬프트가 비어 있습니다.");
-      return;
-    }
-    setFavPrompts((prev) => {
-      const next = prev.includes(p) ? prev.filter((x) => x !== p) : [p, ...prev];
-      writeFavs(next);
-      return next;
-    });
-    onShowToast(isFav ? "즐겨찾기 해제" : "✅ 즐겨찾기 저장");
-  };
+  const p = (unifiedPrompt || "").trim();
+  if (!p) {
+    onShowToast("프롬프트가 비어 있습니다.");
+    return;
+  }
+
+  setFavPrompts((prev) => {
+    const exists = prev.some((x) => x.text === p);
+    const next = exists
+      ? prev.filter((x) => x.text !== p)
+      : [{ id: `f_${Date.now()}`, text: p, createdAt: Date.now() }, ...prev];
+
+    writeFavs(next);
+    return next;
+  });
+
+  onShowToast(isFav ? "즐겨찾기 해제" : "✅ 즐겨찾기 저장");
+};
+
+
+
+const applyFavorite = (fav: FavPrompt) => {
+  setUnifiedPrompt(fav.text);
+  onShowToast("✅ 프롬프트를 적용했습니다.");
+};
+
+const copyFavorite = async (fav: FavPrompt) => {
+  try {
+    await navigator.clipboard.writeText(fav.text);
+    onShowToast("✅ 프롬프트 복사 완료");
+  } catch {
+    onShowToast("❌ 복사 실패 (권한 확인)");
+  }
+};
+
+const deleteFavorite = (id: string) => {
+  setFavPrompts((prev) => {
+    const next = prev.filter((x) => x.id !== id);
+    writeFavs(next);
+    return next;
+  });
+  onShowToast("✅ 즐겨찾기 삭제");
+};
 
   /** ✅ 공통 생성 파이프라인(이미지+텍스트) */
   const generateCardFromPrompt = async (toastMsg: string) => {
@@ -688,37 +801,17 @@ Rules:
       // 1) 텍스트 생성
       const rawResponse = await generateExpandedContent(baseContext, "card", cardTextPrompt);
 
-      let newTitle = "";
-      let newBody = "";
-
-      const parts = rawResponse.split("[BODY]");
-      if (parts.length >= 2) {
-        newTitle = parts[0].replace("[HEADLINE]", "").trim();
-        newBody = parts[1].trim();
-      } else {
-        const lines = rawResponse.split("\n").filter((l) => l.trim() !== "");
-        if (lines.length > 0) {
-          newTitle = lines[0];
-          const bodyStartIndex = lines.findIndex((l) => /^\d+\./.test(l));
-          if (bodyStartIndex !== -1) newBody = lines.slice(bodyStartIndex).join("\n");
-          else if (lines.length > 1) newBody = lines.slice(1).join("\n");
-          else newBody = summary || baseContext;
-        }
-      }
-
-      newTitle = cleanHeadline(newTitle);
-      newBody = cleanAndFormatText(newBody);
-
-      if (!newTitle || newTitle.length < 2) {
-        const fallbackTitle = cleanHeadline((summary || manual || "주제").split(/[.!?\n]/)[0]);
-        newTitle = fallbackTitle;
-      }
-      if (!newBody || newBody.length < 10) newBody = summary || baseContext;
+      const parsed = parseCardResponse(rawResponse, summary || baseContext);
+      const newTitle = parsed.title;
+      const newBody = parsed.body;
 
       // 2) 이미지 생성
       const stylePrompt = isAutoMode ? "" : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
       const enhancedStylePrompt = `${stylePrompt}${qualitySuffix}`;
       const imgContext = buildEnhancedImagePrompt(newTitle, baseContext, manual);
+
+      // ✅ (결과) AI가 실제로 사용한 최종 프롬프트를 저장 (읽기 전용 표시)
+      setAiFinalImagePrompt(`IMAGE_PROMPT:\n${imgContext}\n\nSTYLE_PROMPT:\n${enhancedStylePrompt}`);
 
       // imageService 시그니처가 (prompt, stylePrompt)라고 가정
       const imgData = await generateImage(imgContext, enhancedStylePrompt);
@@ -764,6 +857,9 @@ Rules:
         baseContext,
         manual
       );
+
+      // ✅ (결과) AI가 실제로 사용한 최종 프롬프트를 저장 (읽기 전용 표시)
+      setAiFinalImagePrompt(`IMAGE_PROMPT:\n${variationPrompt}\n\nSTYLE_PROMPT:\n${enhancedStylePrompt}`);
 
       const newImgUrl = await generateImage(variationPrompt, enhancedStylePrompt);
 
@@ -869,7 +965,7 @@ ${summary}
               {/* 통합 프롬프트 */}
               <div className="space-y-3 max-w-3xl mx-auto text-left">
                 <label className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
-                  이미지 프롬프트 (통합 입력)
+                  이미지 프롬프트
                 </label>
 
                 <textarea
@@ -912,39 +1008,60 @@ ${summary}
                 </div>
 
                 {/* 즐겨찾기 목록 */}
-                {favPrompts.length ? (
-                  <div className="mt-4">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
-                        즐겨찾기 프롬프트
-                      </p>
-                      <button
-                        onClick={() => {
-                          setFavPrompts([]);
-                          writeFavs([]);
-                          onShowToast("즐겨찾기 전체 삭제");
-                        }}
-                        className="text-[11px] font-black text-gray-400 hover:text-gray-600"
-                        title="전체 삭제"
-                      >
-                        비우기
-                      </button>
-                    </div>
-                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {favPrompts.slice(0, 6).map((p, i) => (
-                        <button
-                          key={i}
-                          onClick={() => setUnifiedPrompt(p)}
-                          className="px-3 py-3 rounded-2xl text-left text-xs font-semibold border bg-white border-gray-100 text-gray-600 hover:border-gray-300 hover:bg-gray-50 transition-all"
-                          title="클릭하면 프롬프트에 적용"
-                        >
-                          {p}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
+{favPrompts.length ? (
+  <div className="mt-4">
+    <div className="flex items-center justify-between">
+      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
+        즐겨찾기 프롬프트
+      </p>
+      <button
+        onClick={() => {
+          setFavPrompts([]);
+          writeFavs([]);
+          onShowToast("즐겨찾기 전체 삭제");
+        }}
+        className="text-[11px] font-black text-gray-400 hover:text-gray-600"
+        title="전체 삭제"
+      >
+        비우기
+      </button>
+    </div>
+
+    <div className="mt-2 space-y-2">
+      {favPrompts.slice(0, 10).map((fav) => (
+        <div
+          key={fav.id}
+          className="flex items-start gap-2 p-3 rounded-2xl border bg-white border-gray-100 hover:border-gray-300 transition-all"
+        >
+          <button
+            onClick={() => applyFavorite(fav)}
+            className="flex-1 text-left text-xs font-semibold text-gray-700 hover:text-gray-900"
+            title="클릭하면 입력창에 적용"
+          >
+            {fav.text}
+          </button>
+
+          <button
+            onClick={() => void copyFavorite(fav)}
+            className="p-2 rounded-xl bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100"
+            title="복사"
+          >
+            <Copy size={14} />
+          </button>
+
+          <button
+            onClick={() => deleteFavorite(fav.id)}
+            className="p-2 rounded-xl bg-rose-50 border border-rose-100 text-rose-600 hover:bg-rose-100"
+            title="삭제"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  </div>
+) : null}
+</div>
 
               {/* 카테고리 */}
               <div className="space-y-6 max-w-2xl mx-auto">
@@ -1097,6 +1214,44 @@ ${summary}
                     초기화
                   </button>
                 </div>
+
+{/* ✅ (결과) 배경 이미지 AI 프롬프트: AI가 최종으로 만든 프롬프트 결과 */}
+<div className="mt-16 bg-white rounded-[24px] p-6 border border-gray-100">
+  <div className="flex items-center justify-between gap-2 mb-3">
+    <div>
+      <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">
+        배경 이미지 AI 프롬프트 (결과)
+      </p>
+      <p className="text-xs text-gray-500 font-medium">
+        AI가 실제로 사용한 최종 프롬프트를 읽기 전용으로 표시합니다.
+      </p>
+    </div>
+
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(aiFinalImagePrompt || "");
+          onShowToast("✅ AI 프롬프트 복사 완료");
+        } catch {
+          onShowToast("❌ 복사 실패 (권한 확인)");
+        }
+      }}
+      disabled={!aiFinalImagePrompt}
+      className="px-4 py-2 rounded-full bg-gray-50 border border-gray-200 text-xs font-black text-gray-700 hover:bg-gray-100 transition-all disabled:opacity-50 flex items-center gap-2"
+      title="AI 최종 프롬프트 복사"
+    >
+      <Copy size={14} />
+      복사
+    </button>
+  </div>
+
+  <textarea
+    readOnly
+    value={aiFinalImagePrompt || ""}
+    placeholder="이미지를 생성하면 여기에 AI 최종 프롬프트가 표시됩니다."
+    className="w-full min-h-[120px] bg-gray-50 p-4 rounded-2xl border border-gray-100 text-gray-800 text-xs leading-relaxed focus:outline-none resize-none"
+  />
+</div>
 
                 <CardNewsGenerator
                   imageUrl={expandedData.image.img || cardImage}

@@ -57,7 +57,7 @@ const ChartVisualizer: React.FC<Props> = ({ analysisText, keyword, language }) =
           }
         `;
 
-        const response = await generateExpandedContent(prompt, 'sns', '');
+        const response = await generateExpandedContent(prompt, 'general', '');
         
         if (!isMounted) return;
 

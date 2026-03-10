@@ -1,6 +1,7 @@
 // src/services/geminiService.ts
 import { GoogleGenAI, Modality } from "@google/genai";
 import { NewsItem, TrendAnalysis, Citation, FactCheck } from "../types";
+import { isBlockedByKeyword, isBlockedDomain, normalizeNewsUrl } from "./sourceService";
 
 console.log("🚀 초강력 텍스트 방어막이 추가된 GeminiService 로드 완료!");
 
@@ -26,42 +27,342 @@ const getApiKey = () => {
   return key.trim();
 };
 
-const cleanAndParseJson = (text: string) => {
-  if (!text) return null;
-
+/**
+ * ✅ SDK 응답에서 payload(text/object)를 안전하게 추출합니다.
+ * - response.text가 string 또는 object(JSON)인 케이스 모두 처리
+ */
+const getResponsePayload = (response: any): unknown => {
   try {
-    let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const start = cleanText.indexOf("{");
-    const end = cleanText.lastIndexOf("}");
-    if (start !== -1 && end !== -1) {
-      cleanText = cleanText.substring(start, end + 1);
-    }
-    return JSON.parse(cleanText);
-  } catch (e) {
-    console.warn("표준 JSON 파싱 실패! 텍스트 강제 추출을 시도합니다...", text);
-    try {
-      const summaryMatch = text.match(
-        /"summary"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"sentiment"|,\s*"keyPoints"|,\s*"growthScore"|,\s*"sources"|,\s*"citations"|,\s*"factChecks"|\})/i
-      );
-      const sentimentMatch = text.match(/"sentiment"\s*:\s*"([^"]*)"/i);
-      const scoreMatch = text.match(/"growthScore"\s*:\s*(\d+)/i);
+    const t = response?.text;
+    if (t && typeof t === "object") return t;
+    if (typeof t === "string" && t.trim().length > 0) return t;
+  } catch {}
 
-      if (summaryMatch && summaryMatch[1]) {
-        return {
-          summary: summaryMatch[1].trim(),
-          sentiment: sentimentMatch ? sentimentMatch[1] : "neutral",
-          keyPoints: ["AI 분석 데이터 자동 복구됨"],
-          growthScore: scoreMatch ? parseInt(scoreMatch[1]) : 50,
-          citations: [],
-          factChecks: [],
-        };
-      }
-    } catch (err) {
-      console.error("강제 추출 실패:", err);
+  // candidates -> content.parts[].text 조합(일부 SDK/모드)
+  try {
+    const parts = response?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      const texts = parts
+        .map((p: any) => p?.text)
+        .filter((x: any) => typeof x === "string");
+      if (texts.length) return texts.join("\n");
     }
-    return null;
-  }
+  } catch {}
+
+  return "";
 };
+
+const stripCodeFences = (s: string) => s.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+const normalizeSmartQuotes = (s: string) =>
+  s
+    .replace(/[“”]/g, '"')
+    .replace(/[„]/g, '"')
+    .replace(/[’‘]/g, "'")
+    .replace(/[‐‑‒–—―]/g, "-");
+
+/**
+ * ✅ JSON/JS 객체 형태 응답에서 { ... } 또는 [ ... ] 영역만 괄호 밸런싱으로 추출
+ * - JSON 앞/뒤에 문장 붙어도 견딤
+ * - 문자열("...") 내부의 괄호는 무시
+ */
+const extractJsonByBalancing = (text: string) => {
+  const s = String(text || "");
+  const firstObj = s.indexOf("{");
+  const firstArr = s.indexOf("[");
+  const start =
+    firstObj === -1 ? firstArr : firstArr === -1 ? firstObj : Math.min(firstObj, firstArr);
+
+  if (start === -1) return s.trim();
+
+  const open = s[start];
+  const stack: string[] = [open === "{" ? "}" : "]"];
+
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start + 1; i < s.length; i++) {
+    const ch = s[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    } else {
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") stack.push("}");
+      else if (ch === "[") stack.push("]");
+      else if (ch === "}" || ch === "]") {
+        stack.pop();
+        if (stack.length === 0) return s.slice(start, i + 1).trim();
+      }
+    }
+  }
+
+  return s.slice(start).trim();
+};
+
+/**
+ * ✅ JSON string 내부 실제 개행(\n/\r/\u2028/\u2029)은 JSON.parse를 깨뜨립니다.
+ * double-quoted string 내부의 실제 개행만 \\n 으로 치환.
+ */
+const escapeUnescapedNewlinesInStrings = (input: string) => {
+  const s = String(input || "");
+  let out = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+
+    if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") {
+      out += "\\n";
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
+};
+
+/**
+ * ✅ single-quoted 문자열을 double-quoted로 변환 (멀티라인 포함)
+ * - 문자열 내부의 " 는 \\" 로 이스케이프
+ * - 실제 개행은 \\n 로 변환
+ */
+const convertSingleQuotedStrings = (input: string) => {
+  const s = String(input || "");
+  let out = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (inSingle) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        out += "\\";
+        escaped = true;
+        continue;
+      }
+      if (ch === "'") {
+        out += '"';
+        inSingle = false;
+        continue;
+      }
+      if (ch === '"') {
+        out += '\\"';
+        continue;
+      }
+      if (ch === "\n" || ch === "\r" || ch === "\u2028" || ch === "\u2029") {
+        out += "\\n";
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+
+    if (inDouble) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+
+    if (ch === "'") {
+      out += '"';
+      inSingle = true;
+      escaped = false;
+      continue;
+    }
+
+    out += ch;
+    if (ch === '"') {
+      inDouble = true;
+      escaped = false;
+    }
+  }
+
+  return out;
+};
+
+/**
+ * ✅ "JSON처럼 보이지만 JSON이 아닌" JS 객체 리터럴을 JSON으로 보정
+ * - unquoted key, single quotes, trailing comma, 문자열 내부 개행 등을 복구
+ */
+const toStrictJsonLike = (input: string) => {
+  let s = stripCodeFences(normalizeSmartQuotes(String(input || "")));
+  s = extractJsonByBalancing(s);
+
+  // 1) 따옴표 없는 key -> "key"
+  s = s.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
+
+  // 2) single-quoted string -> double-quoted string
+  s = convertSingleQuotedStrings(s);
+
+  // 3) trailing comma 제거
+  s = s.replace(/,\s*([}\]])/g, "$1");
+
+  // 4) 문자열 내부 실제 개행 보정
+  s = escapeUnescapedNewlinesInStrings(s);
+
+  return s.trim();
+};
+
+const tryParseJson = (raw: unknown): any | null => {
+  if (!raw) return null;
+
+  // ✅ SDK가 object로 준 경우 그대로 사용
+  if (typeof raw === "object") return raw;
+
+  const s0 = String(raw || "");
+
+  // strict: (혹시 정말 JSON이라면) 그대로 시도
+  try {
+    let s = stripCodeFences(normalizeSmartQuotes(extractJsonByBalancing(s0)));
+    s = escapeUnescapedNewlinesInStrings(s);
+    return JSON.parse(s);
+  } catch {}
+
+  // repair: JS object literal -> JSON 변환 후 시도
+  try {
+    return JSON.parse(toStrictJsonLike(s0));
+  } catch {}
+
+  return null;
+};
+
+const cleanAndParseJson = (input: unknown) => {
+  const parsed = tryParseJson(input);
+  if (parsed) return parsed;
+
+  const text = String(input || "");
+  // (로그 억제) 폴백 복구 시도
+
+
+  // ✅ 마지막 폴백: summary/sentiment/growthScore만이라도 복구 (기존 장점 유지)
+  try {
+    const summaryMatch =
+      text.match(
+        /"summary"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"sentiment"|,\s*"keyPoints"|,\s*"growthScore"|,\s*"sources"|,\s*"citations"|,\s*"factChecks"|,\s*"confidenceScore"|\})/i
+      ) ||
+      text.match(/\bsummary\s*:\s*"([\s\S]*?)"\s*(?:,\s*sentiment|,\s*keyPoints|,\s*growthScore|\})/i) ||
+      text.match(
+        /"summary"\s*:\s*'([\s\S]*?)'\s*(?:,\s*"sentiment"|,\s*"keyPoints"|,\s*"growthScore"|,\s*"sources"|,\s*"citations"|,\s*"factChecks"|,\s*"confidenceScore"|\})/i
+      ) ||
+      text.match(/\bsummary\s*:\s*'([\s\S]*?)'\s*(?:,\s*sentiment|,\s*keyPoints|,\s*growthScore|\})/i);
+
+    const sentimentMatch =
+      text.match(/"sentiment"\s*:\s*"([^"]*)"/i) ||
+      text.match(/\bsentiment\s*:\s*"([^"]*)"/i) ||
+      text.match(/"sentiment"\s*:\s*'([^']*)'/i) ||
+      text.match(/\bsentiment\s*:\s*'([^']*)'/i);
+
+    const scoreMatch =
+      text.match(/"growthScore"\s*:\s*(\d+)/i) || text.match(/\bgrowthScore\s*:\s*(\d+)/i);
+
+    if (summaryMatch && summaryMatch[1]) {
+      return {
+        summary: String(summaryMatch[1]).trim(),
+        sentiment: sentimentMatch ? String(sentimentMatch[1]) : "neutral",
+        keyPoints: [],
+        growthScore: scoreMatch ? parseInt(String(scoreMatch[1]), 10) : 50,
+        citations: [],
+        factChecks: [],
+      };
+    }
+  } catch (err) {
+    console.error("강제 추출 실패:", err);
+  }
+  console.warn("JSON 파싱/복구 모두 실패(응답 형식 비정상).", String(input || "").slice(0, 800));
+
+  return null;
+};
+
+/**
+ * ✅ evidence 정규화 helper
+ * - App.tsx에서 만든 evidenceArray를 그대로 넘겨도 안전하게 정리해줍니다.
+ */
+export type EvidenceItem = {
+  title: string;
+  url: string;
+  source?: string;
+  snippet?: string;
+  date?: string;
+};
+
+const normalizeUrlSafe = (u: string) => normalizeNewsUrl(u);
+
+const isBlockedEvidenceUrl = (u: string) => {
+  if (!u) return true;
+  return isBlockedDomain(u) || isBlockedByKeyword(u);
+};
+
+export function normalizeEvidence(evidence: EvidenceItem[], max = 12): EvidenceItem[] {
+  const list = Array.isArray(evidence) ? evidence : [];
+  const out: EvidenceItem[] = [];
+  const seen = new Set<string>();
+
+  for (const e of list) {
+    const url = normalizeUrlSafe(String(e?.url || "").trim());
+    if (!url || isBlockedEvidenceUrl(url)) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      title: String(e?.title || "관련 기사").trim() || "관련 기사",
+      url,
+      source: e?.source ? String(e.source).trim() : "",
+      snippet: e?.snippet ? String(e.snippet).trim() : "",
+      date: e?.date ? String(e.date).trim() : "",
+    });
+    if (out.length >= max) break;
+  }
+
+  return out;
+}
+
 
 export const extractErrorMessage = (error: any): string => {
   if (!error) return "Unknown error";
@@ -131,18 +432,11 @@ export const withRetry = async <T>(
   }
 };
 
-/** ✅ A 업그레이드: evidence URL 정규화(utm 제거/해시 제거) */
-const normalizeUrlSafe = (u: string) => {
-  try {
-    const url = new URL(u);
-    url.hash = "";
-    ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"].forEach((k) =>
-      url.searchParams.delete(k)
-    );
-    return url.toString();
-  } catch {
-    return u;
-  }
+const factLabelTextKo = (label: string) => {
+  const v = String(label || "").toLowerCase();
+  if (v === "fact") return "팩트";
+  if (v === "speculation") return "추정";
+  return "해석";
 };
 
 /** ✅ A 업그레이드: 분석 응답에 citations/factChecks가 없으면 안전 보강 */
@@ -153,7 +447,43 @@ const ensureTrustFields = (analysis: any): TrendAnalysis => {
   return analysis as TrendAnalysis;
 };
 
-/** ✅ A 업그레이드: 응답 객체 최소 유효성/형식 보정 (버전 호환/JSON 깨짐 방어) */
+/** ✅ summary(1~5.)에서 포인트 텍스트를 추출 */
+const extractNumber = (summary: string, point: number): string => {
+  const text = String(summary || "");
+  // 1. ... 2. ... 형태를 robust하게 파싱 (줄바꿈 포함)
+  const re = new RegExp(
+    `(?:^|\\n)\\s*${point}\\.?\\s+([\\s\\S]*?)(?=(?:\\n\\s*${point + 1}\\.?\\s+)|$)`,
+    "m"
+  );
+  const m = text.match(re);
+  return (m?.[1] || "").trim();
+};
+
+/**
+ * ✅ summary("1. ...\n\n2. ...") 에서 각 번호 포인트 본문을 추출
+ */
+const extractNumberedSummaryPoints = (summary: string): string[] => {
+  const s = String(summary || "").replace(/\r/g, "").trim();
+  if (!s) return [];
+
+  // "1." ~ "5." 기준 분리
+  const parts = s.split(/\n?\s*(?=\d\.\s)/g).map((x) => x.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    const m = p.match(/^\d\.\s*([\s\S]*)$/);
+    if (m && m[1]) out.push(m[1].trim());
+  }
+  if (!out.length) return [s];
+  return out;
+};
+
+/**
+ * ✅ 카드용 텍스트 정리(잘림 없이 원문 유지)
+ */
+const toCardLine = (text: string) => {
+  return String(text || "").replace(/\s+/g, " ").trim();
+};
+
 const normalizeTrendAnalysis = (raw: any): TrendAnalysis | null => {
   if (!raw || typeof raw !== "object") return null;
 
@@ -167,7 +497,9 @@ const normalizeTrendAnalysis = (raw: any): TrendAnalysis | null => {
     | "negative";
 
   if (!Array.isArray(a.keyPoints)) a.keyPoints = [];
-  a.keyPoints = a.keyPoints.map((x: any) => String(x || "")).filter((x: string) => x.trim().length > 0);
+  a.keyPoints = a.keyPoints
+    .map((x: any) => String(x || ""))
+    .filter((x: string) => x.trim().length > 0);
 
   const gs = Number(a.growthScore);
   a.growthScore = Number.isFinite(gs) ? Math.min(100, Math.max(0, gs)) : 50;
@@ -194,7 +526,134 @@ const normalizeTrendAnalysis = (raw: any): TrendAnalysis | null => {
     reason: String(f?.reason || ""),
   }));
 
+
+  // ✅ keyPoints가 너무 적으면 summary(1~5.) 기반으로 최소 3개 보강 (기존 UI 카드 유지)
+  if (a.keyPoints.length < 3 && typeof a.summary === "string" && a.summary.trim().length > 0) {
+    const pts = extractNumberedSummaryPoints(a.summary);
+    const filled = pts.map((p) => toCardLine(p)).filter((x) => x.trim().length > 0);
+    const merged = [...a.keyPoints, ...filled].filter((x) => x && String(x).trim().length > 0);
+    // 중복 제거
+    const uniq: string[] = [];
+    const seen = new Set<string>();
+    for (const k of merged) {
+      const kk = String(k).trim();
+      if (!kk) continue;
+      if (seen.has(kk)) continue;
+      seen.add(kk);
+      uniq.push(kk);
+      if (uniq.length >= 3) break;
+    }
+    a.keyPoints = uniq.length ? uniq : a.keyPoints;
+  }
+
+  // ✅ confidenceScore가 없으면 자동 계산 (한장요약 '신뢰도' 0% 방지)
+  if (!Number.isFinite(Number(a.confidenceScore))) {
+    let cs = 50;
+    if (Array.isArray(a.factChecks) && a.factChecks.length) {
+      const avg =
+        a.factChecks.reduce((sum: number, f: any) => sum + Number(f?.confidence ?? 0), 0) /
+        a.factChecks.length;
+      cs = Math.round(Math.min(100, Math.max(0, avg)));
+    } else if (Array.isArray(a.citations) && a.citations.length) {
+      cs = 70;
+    }
+    a.confidenceScore = cs;
+  }
+
   return a as TrendAnalysis;
+
+};
+
+/** ✅ citations/factChecks가 비어있을 때 news/evidence 기반으로 자동 생성 */
+const hydrateTrustFields = (
+  analysis: TrendAnalysis,
+  opts: {
+    links?: { title?: string; url?: string; publisher?: string }[];
+  } = {}
+): TrendAnalysis => {
+  const a: any = ensureTrustFields(analysis || ({} as any));
+
+  const links = Array.isArray(opts.links) ? opts.links : [];
+  const uniqueLinks = Array.from(
+    new Map(
+      links
+        .map((l) => ({
+          title: String(l?.title || "관련 기사").trim() || "관련 기사",
+          url: normalizeUrlSafe(String(l?.url || "").trim()),
+          publisher: l?.publisher ? String(l.publisher) : undefined,
+        }))
+        .filter((l) => !!l.url)
+        .map((l) => [l.url, l])
+    ).values()
+  );
+
+  // 1) citations 보강: 포인트 1~5마다 최소 1개씩
+  if (!Array.isArray(a.citations)) a.citations = [];
+  const hasPoint = (p: number) =>
+    a.citations.some((c: any) => Number(c?.point) === p && String(c?.url || "").trim());
+  const pickForPoint = (p: number) => uniqueLinks[(p - 1) % Math.max(1, uniqueLinks.length)];
+
+  for (let p = 1; p <= 5; p++) {
+    if (hasPoint(p)) continue;
+    const picked = pickForPoint(p);
+    if (picked) {
+      a.citations.push({
+        point: p,
+        title: picked.title,
+        url: picked.url,
+        publisher: picked.publisher,
+      });
+    }
+  }
+
+  // 2) factChecks 보강: 포인트 1~5 각각 1개
+  if (!Array.isArray(a.factChecks)) a.factChecks = [];
+  const fcHasPoint = (p: number) => a.factChecks.some((f: any) => Number(f?.point) === p);
+  const summaryPoints = extractNumberedSummaryPoints(a.summary || "");
+
+  const guessLabel = (text: string) => {
+    const t = String(text || "").toLowerCase();
+    if (/(가능|전망|예상|우려|추정|잠재|~할|may|could|likely)/i.test(t)) return "speculation";
+    if (/(확인|발표|공식|수치|통계|기록|증가|감소|달러|%|원)/i.test(t)) return "fact";
+    return "interpretation";
+  };
+
+  for (let p = 1; p <= 5; p++) {
+    if (fcHasPoint(p)) continue;
+    const text = summaryPoints[p - 1] || "";
+    const citesForPoint = (a.citations || []).filter((c: any) => Number(c?.point) === p);
+    const label = guessLabel(text);
+    const base = label === "fact" ? 78 : label === "interpretation" ? 68 : 58;
+    const bonus = Math.min(18, citesForPoint.length * 8);
+    const confidence = Math.min(95, Math.max(40, Math.round(base + bonus)));
+    const pointPreview = String(text || "").replace(/\s+/g, " ").trim().slice(0, 84);
+    const sourceTitles = citesForPoint
+      .slice(0, 2)
+      .map((c: any) => String(c?.title || "").trim())
+      .filter(Boolean)
+      .join(", ");
+
+    a.factChecks.push({
+      point: p,
+      label,
+      confidence,
+      reason: citesForPoint.length
+        ? `${sourceTitles || "출처 기사"}를 참고하면 "${pointPreview}" 내용은 ${label === "fact" ? "실제 보도와 비교적 직접적으로 맞닿아 있어" : label === "interpretation" ? "보도 내용을 해석해 확장한 성격이 있어" : "전망과 가능성을 포함한 성격이 있어"} 현재 기준에서는 ${factLabelTextKo(label)}에 가깝다고 볼 수 있습니다.`
+        : `"${pointPreview}" 내용은 연결된 출처가 충분하지 않아 단정적으로 보기보다 보수적으로 해석했습니다. 그래서 현재는 ${factLabelTextKo(label)}로 분류하고 신뢰도도 다소 낮게 잡았습니다.`,
+    });
+  }
+
+  // 3) confidenceScore 산출 (UI 검증점수)
+  const fcs = (a.factChecks || []).slice().sort((x: any, y: any) => Number(x?.point || 0) - Number(y?.point || 0)).slice(0, 5);
+  if (fcs.length) {
+    const avg = fcs.reduce((acc: number, x: any) => acc + Number(x?.confidence || 0), 0) / fcs.length;
+    a.confidenceScore = Math.max(0, Math.min(100, Math.round(avg)));
+  } else {
+    const covered = new Set((a.citations || []).map((c: any) => Number(c?.point))).size;
+    a.confidenceScore = Math.round((covered / 5) * 70);
+  }
+
+  return normalizeTrendAnalysis(a) || (a as TrendAnalysis);
 };
 
 export class GeminiTrendService {
@@ -222,6 +681,13 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 3. **The 'summary' field MUST contain EXACTLY 5 numbered points (from 1. to 5.).**
 4. **EACH of the 5 points in the summary MUST be a detailed, substantial paragraph consisting of at least 3-5 sentences.** Provide deep insights, specific facts, figures, and context for every single point.
 5. Return ONLY a JSON object. Do not include markdown code blocks.
+7. OUTPUT MUST BE STRICT VALID JSON:
+   - Use double quotes for ALL keys and string values.
+   - Ensure commas between fields and array items.
+   - Do NOT use single quotes.
+   - Do NOT omit quotes around keys.
+   - Do NOT include trailing commas.
+
 6. Format example:
 {
   "summary": "1. ...\\n\\n2. ...\\n\\n3. ...\\n\\n4. ...\\n\\n5. ...",
@@ -236,14 +702,13 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
           contents: prompt,
           config: {
             tools: [{ googleSearch: {} }],
-            // ✅ 일반 분석도 JSON 강제해주면 파싱 안정성이 크게 올라갑니다.
             responseMimeType: "application/json",
             temperature: 0.2,
           },
         });
 
-        const text = response.text || "{}";
-        let analysis: any = cleanAndParseJson(text);
+        const payload = getResponsePayload(response);
+        let analysis: any = cleanAndParseJson(payload);
         let news: NewsItem[] = [];
 
         const grounding = response.candidates?.[0]?.groundingMetadata;
@@ -263,38 +728,20 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
           });
         }
 
-        const fallbacks = [
-          {
-            title: `🔍 '${keyword}' 관련 최신 구글 뉴스`,
-            uri: `https://news.google.com/search?q=${encodeURIComponent(keyword)}`,
-            source: "Google News",
-          },
-          {
-            title: `📰 '${keyword}' 네이버 뉴스 상세 검색`,
-            uri: `https://search.naver.com/search.naver?where=news&query=${encodeURIComponent(keyword)}`,
-            source: "Naver News",
-          },
-          {
-            title: `📈 '${keyword}' 구글 트렌드 빅데이터 확인`,
-            uri: `https://trends.google.com/trends/explore?q=${encodeURIComponent(keyword)}`,
-            source: "Google Trends",
-          },
-          {
-            title: `💬 '${keyword}' X(트위터) 실시간 반응 보기`,
-            uri: `https://twitter.com/search?q=${encodeURIComponent(keyword)}&f=live`,
-            source: "X (Twitter)",
-          },
-          {
-            title: `▶️ '${keyword}' 유튜브 관련 영상 찾아보기`,
-            uri: `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}`,
-            source: "YouTube",
-          },
-        ];
-
-        if (news.length < 5) {
-          const needed = 5 - news.length;
-          news = [...news, ...fallbacks.slice(0, needed)];
-        }
+        // 포털 검색/트렌드/X/유튜브 같은 링크는 소스피드에 넣지 않습니다.
+        news = news.filter((item) => {
+          const uri = String(item?.uri || "");
+          return (
+            uri &&
+            !uri.includes("google.com/search") &&
+            !uri.includes("news.google.com/search") &&
+            !uri.includes("search.naver.com") &&
+            !uri.includes("twitter.com/search") &&
+            !uri.includes("x.com/search") &&
+            !uri.includes("youtube.com/results") &&
+            !uri.includes("trends.google.com")
+          );
+        });
 
         if (!analysis) {
           analysis = {
@@ -308,9 +755,13 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
           };
         }
 
-        // ✅ A 필드 보강 + 타입 보정
         analysis = ensureTrustFields(analysis);
-        const normalized = normalizeTrendAnalysis(analysis) || (analysis as TrendAnalysis);
+        let normalized = normalizeTrendAnalysis(analysis) || (analysis as TrendAnalysis);
+
+        // ✅ trust fields 자동 보강 (citations/factChecks/confidenceScore)
+        normalized = hydrateTrustFields(normalized, {
+          links: (news || []).map((n: any) => ({ title: n?.title, url: n?.uri, publisher: n?.source })),
+        });
 
         return { news, analysis: normalized };
       });
@@ -333,13 +784,12 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 
   /**
    * ✅ [A 업그레이드 전용] 근거(EVIDENCE) 기반 분석 + citations + factChecks
-   * - Serper/Gmail/내부 수집 링크를 evidence로 넣어 "근거 기반 요약" 실현
-   * - ✅ Type/responseSchema 제거 (SDK 버전 차이로 런타임 에러 방지)
+   * - Type/responseSchema 제거 (SDK 버전 차이로 런타임 에러 방지)
    */
   async fetchTrendsAndAnalysisA(
     keyword: string,
     modeInstruction: string,
-    evidence: Array<{ title: string; url: string; source?: string; snippet?: string; date?: string }>
+    evidence: EvidenceItem[]
   ): Promise<{ news: NewsItem[]; analysis: TrendAnalysis }> {
     try {
       return await withRetry(async () => {
@@ -348,29 +798,24 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 
         const ai = new GoogleGenAI({ apiKey: key });
 
-        // ✅ news 카드: evidence로 바로 구성
-        const news: NewsItem[] = (evidence || [])
-          .filter((e) => !!e?.url)
-          .slice(0, 12)
-          .map((e) => {
-            const url = normalizeUrlSafe(e.url);
-            let sourceName = e.source || "Web";
-            try {
-              sourceName = new URL(url).hostname.replace("www.", "");
-            } catch {}
-            return {
-              title: e.title || "관련 기사",
-              uri: url,
-              source: sourceName,
-              snippet: e.snippet,
-              date: e.date,
-            };
-          });
+        const normalizedEvidence = normalizeEvidence(evidence, 12);
 
-        // ✅ evidence 텍스트
-        const evidenceText = (evidence || [])
-          .filter((e) => !!e?.url)
-          .slice(0, 12)
+        const news: NewsItem[] = normalizedEvidence.map((e) => {
+          const url = normalizeUrlSafe(e.url);
+          let sourceName = e.source || "Web";
+          try {
+            sourceName = new URL(url).hostname.replace("www.", "");
+          } catch {}
+          return {
+            title: e.title || "관련 기사",
+            uri: url,
+            source: sourceName,
+            snippet: e.snippet,
+            date: e.date,
+          };
+        });
+
+        const evidenceText = normalizedEvidence
           .map((e, idx) => {
             const url = normalizeUrlSafe(e.url);
             return [
@@ -389,17 +834,21 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 
 [CRITICAL REQUIREMENTS]
 1) LANGUAGE: ALL output content MUST be written in KOREAN.
-2) Use ONLY the information from [EVIDENCE SOURCES]. Do NOT browse or invent facts.
-3) "summary" MUST contain EXACTLY 5 numbered points (1. to 5.).
-4) EACH point MUST be 3-5 sentences (detailed, substantial).
-5) Return ONLY JSON (no markdown).
+2) Use ONLY the information from [EVIDENCE SOURCES]. Do NOT browse, infer hidden facts, or invent anything not supported by evidence.
+3) If evidence is weak, conflicting, or missing, explicitly say so in Korean using cautious wording such as "근거 부족", "확인 필요", "추정".
+4) Never fabricate numbers, timelines, market sizes, rankings, quotations, or future certainty.
+5) "summary" MUST contain EXACTLY 5 numbered points (1. to 5.).
+6) EACH point MUST be 2-4 sentences, concise and evidence-grounded.
+7) Return ONLY JSON (no markdown).
+8) STRICT JSON ONLY: use double quotes for keys/strings, include all commas, no trailing commas, no single quotes.
 
 [A-TRUST ENHANCEMENTS]
-- "citations": For each point 1~5, attach 1~3 source URLs from the evidence.
+- "citations": For each point 1~5, attach 1~3 source URLs from the evidence only.
+- Do not cite blocked/search/social/wiki URLs.
 - "factChecks": For each point 1~5:
   - label: fact | interpretation | speculation
   - confidence: 0~100
-  - reason: one sentence explaining why.
+  - reason: one short Korean sentence explaining why.
 
 [OUTPUT JSON FORMAT]
 {
@@ -424,10 +873,9 @@ ${evidenceText}
           },
         });
 
-        const text = response.text || "{}";
-        let analysisRaw: any = cleanAndParseJson(text);
+        const payload = getResponsePayload(response);
+        let analysisRaw: any = cleanAndParseJson(payload);
 
-        // ✅ 파싱 실패 폴백
         if (!analysisRaw) {
           analysisRaw = {
             summary:
@@ -441,8 +889,13 @@ ${evidenceText}
         }
 
         analysisRaw = ensureTrustFields(analysisRaw);
-        const normalized = normalizeTrendAnalysis(analysisRaw) || (analysisRaw as TrendAnalysis);
+        let normalized = normalizeTrendAnalysis(analysisRaw) || (analysisRaw as TrendAnalysis);
 
+        // ✅ trust fields 자동 보강 (evidence/news 기반)
+        normalized = hydrateTrustFields(normalized, {
+          links: (news || []).map((n: any) => ({ title: n?.title, url: n?.uri, publisher: n?.source })),
+        });
+      
         return { news, analysis: normalized };
       });
     } catch (e) {
@@ -464,23 +917,187 @@ ${evidenceText}
 }
 
 // ⭐️ [핵심 방어 적용] 카드뉴스 글씨를 쓸 때 구글 서버 503 에러가 나면 화면이 죽지 않도록 방어합니다.
-export const generateExpandedContent = async (summary: string, type: string, stylePrompt?: string) => {
+export const generateExpandedContent = async (
+  summary: string,
+  type: string,
+  stylePrompt?: string
+) => {
   try {
     return await withRetry(async () => {
       const key = getApiKey();
       if (!key) throw new Error("API_KEY_MISSING");
 
       const ai = new GoogleGenAI({ apiKey: key });
-      const prompt = `Create high-quality ${type} content based on this summary: ${summary}. ${
-        stylePrompt ? `Apply style: ${stylePrompt}` : ""
-      } Output only the generated text or JSON as appropriate.`;
+
+      const normalizedType = String(type || "general").toLowerCase().trim();
+
+      const buildPrompt = () => {
+        if (normalizedType === "translate") {
+          return String(summary || "").trim();
+        }
+
+        if (normalizedType === "image") {
+          return `
+You are a visual editor for a Korean news card.
+Create ONLY valid JSON.
+
+[INPUT]
+${summary}
+
+[STYLE]
+${stylePrompt || "깔끔하고 고급스러운 카드뉴스 스타일"}
+
+[TEXT BAN RULE - MUST ALWAYS APPLY]
+- 카드뉴스 배경 이미지에는 한글, 영어, 숫자, 문자, 로고, 워터마크, 타이포그래피가 절대 들어가면 안 됩니다.
+- The generated card image prompt must explicitly forbid any readable text.
+- Always assume the final card image background must contain NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO LOGOS, NO WATERMARKS.
+- 추천 프롬프트에도 동일하게 NO TEXT 규칙을 고정 적용하세요.
+
+[OUTPUT JSON FORMAT]
+{
+  "title": "카드뉴스 헤드라인",
+  "body": "카드뉴스 본문 3~5줄"
+}
+
+[IMPORTANT]
+- 반드시 한국어로 작성
+- 제목은 짧고 강하게
+- 본문은 정보 전달형으로 자연스럽게
+- 이미지용 프롬프트/추천 프롬프트에는 반드시 'No text, no letters, no words, no numbers, no logo, no watermark' 의미가 포함되어야 함
+- JSON 외 텍스트 금지
+          `.trim();
+        }
+
+        if (normalizedType === "sns") {
+          return `
+당신은 동아일보용 고급 AI 대화 어시스턴트입니다.
+사용자의 질문 의도를 파악하고, 필요한 경우 배경·맥락·전략·리스크까지 설명해야 합니다.
+
+[사용자 요청/대화 컨텍스트]
+${String(summary || "").trim()}
+
+[응답 규칙]
+1. 반드시 한국어로 답변하세요.
+2. 링크, URL, 코드블록은 쓰지 마세요.
+3. 답변은 가독성이 높게 정리하세요.
+4. 사용자가 번호형 답변을 원하면 1. 2. 3. 형식으로 답하세요.
+5. 사용자가 심층 설명을 원하면 충분히 길고 구체적으로 답하세요.
+6. 핵심만 요약하지 말고, 왜 중요한지와 어떻게 활용할지까지 설명하세요.
+7. 문장은 자연스럽고 전문적이되 과도하게 딱딱하지 않게 작성하세요.
+          `.trim();
+        }
+
+        if (normalizedType === "video") {
+          return `
+당신은 뉴스 쇼츠 제작 보조 작가입니다.
+아래 내용을 바탕으로 자연스럽고 전달력 있는 영상용 원고를 작성하세요.
+
+${String(summary || "").trim()}
+
+${stylePrompt ? `[스타일]
+${stylePrompt}` : ""}
+
+[규칙]
+- 한국어로 작성
+- 지나치게 짧게 줄이지 말고 자연스럽게 연결
+- 불필요한 군더더기 없이 전달력 있게 작성
+          `.trim();
+        }
+
+        if (normalizedType === "card") {
+          return `
+당신은 동아일보 카드뉴스 에디터입니다.
+아래 입력을 바탕으로 과장 없이 카드뉴스용 텍스트만 작성하세요.
+
+[INPUT]
+${String(summary || "").trim()}
+
+${stylePrompt ? `[CARD RULE]
+${stylePrompt}
+` : ""}
+
+[반드시 지킬 규칙]
+- 한국어로만 작성
+- URL, 출처 표기, 괄호형 부연설명, 해시태그 금지
+- 제목은 기존처럼 짧고 강한 카드뉴스형 문장으로 작성
+- 본문은 반드시 1번부터 5번까지 총 5개의 요약 포인트를 작성
+- 각 포인트는 3~4문장으로 자세하게 작성
+- 첫 문장은 핵심 요약
+- 두번째 문장은 기사 내용 설명
+- 세번째 문장은 시장/산업 영향 분석
+- 네번째 문장은 추가 맥락 또는 전망
+- 다섯번째 포인트는 전체 보강 관점의 추가 분석으로 작성
+- 확인되지 않은 수치나 전망은 쓰지 말고 "추가 확인 필요"처럼 보수적으로 표현
+- 아래 형식을 정확히 지킬 것
+[HEADLINE] 제목
+[BODY]
+1. 문장
+문장
+문장
+문장
+
+2. 문장
+문장
+문장
+문장
+
+3. 문장
+문장
+문장
+문장
+
+4. 문장
+문장
+문장
+문장
+
+5. 문장
+문장
+문장
+문장
+          `.trim();
+        }
+
+        return `
+Create high-quality ${normalizedType || "general"} content based on the following input.
+
+[INPUT]
+${String(summary || "").trim()}
+
+${stylePrompt ? `[STYLE]
+${stylePrompt}
+` : ""}
+
+[IMPORTANT]
+- Write in Korean unless the user clearly requested another language.
+- Use only information clearly supported by the input.
+- If support is weak, say the information needs confirmation instead of guessing.
+- Be specific, useful, and well-structured.
+- Avoid shallow one-line summaries.
+- Output only the requested content.
+        `.trim();
+      };
+
+      const prompt = buildPrompt();
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: prompt,
-        config: type === "image" ? { responseMimeType: "application/json" } : {},
+        config:
+          normalizedType === "image"
+            ? { responseMimeType: "application/json", temperature: 0.5 }
+            : normalizedType === "sns"
+              ? { temperature: 0.7, topP: 0.9 }
+              : { temperature: 0.5 },
       });
-      return response.text || "";
+
+      const payload = getResponsePayload(response);
+      if (typeof payload === "string") return payload;
+      try {
+        return JSON.stringify(payload);
+      } catch {
+        return "";
+      }
     }, 3, 2000);
   } catch (e) {
     console.error("Content Expansion Final Error:", e);
@@ -495,7 +1112,11 @@ export const generateExpandedContent = async (summary: string, type: string, sty
   }
 };
 
-export const generateTTS = async (text: string, voiceName: string = "Zephyr", styleInstruction?: string) => {
+export const generateTTS = async (
+  text: string,
+  voiceName: string = "Zephyr",
+  styleInstruction?: string
+) => {
   try {
     return await withRetry(async () => {
       const key = getApiKey();
@@ -531,7 +1152,9 @@ export const generateImage = async (prompt: string): Promise<string> => {
     return await withRetry(async () => {
       const key = getApiKey();
       if (!key) {
-        alert("🚨 API 키를 찾을 수 없습니다! 우측 상단 [API 키 관리] 버튼을 눌러 다시 한 번 저장해주세요.");
+        alert(
+          "🚨 API 키를 찾을 수 없습니다! 우측 상단 [API 키 관리] 버튼을 눌러 다시 한 번 저장해주세요."
+        );
         throw new Error("API_KEY_MISSING");
       }
 

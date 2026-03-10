@@ -5,6 +5,7 @@ export interface NewsItem {
   source: string;
   snippet?: string;
   date?: string;
+  ts?: number;
 }
 
 /** ✅ 출처(근거) */
@@ -30,6 +31,9 @@ export interface TrendAnalysis {
   sentiment: "positive" | "neutral" | "negative";
   keyPoints: string[];
   growthScore: number;
+
+  /** ✅ 검증 점수(0~100) */
+  confidenceScore?: number;
 
   /** ✅ A 강화: 근거/팩트체크 */
   citations?: Citation[];

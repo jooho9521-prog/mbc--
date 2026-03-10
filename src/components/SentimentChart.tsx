@@ -55,7 +55,7 @@ const SentimentChart: React.FC<Props> = ({ keyword, context, isDarkMode }) => {
         `;
 
         // generateExpandedContent 함수가 services/geminiService에 있다고 가정
-        const response = await generateExpandedContent(prompt, 'sns', '');
+        const response = await generateExpandedContent(prompt, 'general', '');
         
         if (!isMounted) return;
 
@@ -65,7 +65,13 @@ const SentimentChart: React.FC<Props> = ({ keyword, context, isDarkMode }) => {
         
         if (firstBrace !== -1 && lastBrace !== -1) {
           const parsed = JSON.parse(jsonString.substring(firstBrace, lastBrace + 1));
-          setData(parsed);
+          if (
+            typeof parsed?.positive === "number" &&
+            typeof parsed?.negative === "number" &&
+            typeof parsed?.neutral === "number"
+          ) {
+            setData(parsed);
+          }
         }
       } catch (e) {
         console.error("Sentiment Analysis Failed", e);

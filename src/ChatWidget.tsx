@@ -1,15 +1,32 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  MessageSquare, X, Send, Bot, User, Sparkles, 
-  Trash2, ArrowRight, Copy, Download, RefreshCw, 
-  Volume2, StopCircle, ThumbsUp, ThumbsDown,
-  Mic, MicOff 
-} from 'lucide-react';
-import { TrendAnalysis } from './types';
-import { generateExpandedContent } from './services/geminiService';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  MessageSquare,
+  X,
+  Send,
+  Bot,
+  User,
+  Sparkles,
+  Trash2,
+  Copy,
+  Download,
+  RefreshCw,
+  Volume2,
+  StopCircle,
+  ThumbsUp,
+  ThumbsDown,
+  Mic,
+  MicOff,
+  ChevronDown,
+  Wand2,
+  Brain,
+  BarChart3,
+  Search,
+} from "lucide-react";
+import { TrendAnalysis } from "./types";
+import { generateExpandedContent } from "./services/geminiService";
 
-// 동아일보 로고 URL (Base64)
-const DONGA_LOGO_URL = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0OCIgc3Ryb2tlPSIjMDA3YTczIiBzdHJva2Utd2lkdGg9IjUiIGZpbGw9Im5vbmUiLz4KICA8cGF0aCBkPSJNNTAgMiB2OTYgTTIgNTAgaDk2IiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iNSIvPgogIDxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjMwIiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iNSIgZmlsbD0ibm9uZSIvPjwvc3ZnPg==";
+const DONGA_LOGO_URL =
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4KICA8Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0OCIgc3Ryb2tlPSIjMDA3YTczIiBzdHJva2Utd2lkdGg9IjUiIGZpbGw9Im5vbmUiLz4KICA8cGF0aCBkPSJNNTAgMiB2OTYgTTIgNTAgaDk2IiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iNSIvPgogIDxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjMwIiBzdHJva2U9IiMwMDdhNzMiIHN0cm9rZS13aWR0aD0iNSIgZmlsbD0ibm9uZSIvPjwvc3ZnPg==";
 
 interface Props {
   analysis: TrendAnalysis | null;
@@ -17,162 +34,469 @@ interface Props {
   externalCommand?: { text: string; time: number } | null;
 }
 
+type Role = "user" | "assistant";
+
 interface Message {
-  role: 'user' | 'assistant';
+  id: string;
+  role: Role;
   text: string;
+  createdAt: number;
+}
+
+type AnswerMode = "balanced" | "deep" | "strategy" | "critical";
+type AnswerLength = "short" | "medium" | "long";
+
+const STORAGE_KEY = "trendpulse_chatwidget_state_v2";
+
+const MODE_META: Record<
+  AnswerMode,
+  { label: string; desc: string; icon: React.ReactNode }
+> = {
+  balanced: {
+    label: "균형형",
+    desc: "핵심과 맥락을 함께 설명",
+    icon: <Sparkles size={14} />,
+  },
+  deep: {
+    label: "심층형",
+    desc: "배경·의미·전망까지 자세히",
+    icon: <Brain size={14} />,
+  },
+  strategy: {
+    label: "전략형",
+    desc: "실행 방안 중심",
+    icon: <BarChart3 size={14} />,
+  },
+  critical: {
+    label: "비판형",
+    desc: "리스크와 반론 중심",
+    icon: <Search size={14} />,
+  },
+};
+
+const INITIAL_ASSISTANT_MESSAGE =
+  "안녕하세요. 동아일보 AI 도우미입니다.";
+
+function uid() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cleanForSpeech(text: string) {
+  return String(text || "")
+    .replace(/(https?:\/\/[^\s\)]+)/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\(출처.*?\)/g, "")
+    .replace(/\[출처.*?\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function cleanForRender(text: string) {
+  return String(text || "")
+    .replace(/(https?:\/\/[^\s\)]+)/g, "")
+    .replace(/\(출처.*?\)/g, "")
+    .replace(/\[출처.*?\]/g, "")
+    .replace(/###/g, "")
+    .replace(/\\n/g, "\n")
+    .replace(/(?:\r\n|\r|\n)/g, "\n")
+    .trim();
+}
+
+function formatAssistantAnswer(text: string) {
+  if (!text) return text;
+
+  let t = cleanForRender(text).replace(/\n{3,}/g, "\n\n").trim();
+
+  const hasNumbering = /(^|\n)\s*1\.\s/.test(t);
+  if (hasNumbering) {
+    t = t.replace(/(\n|^)\s*(\d+)\.\s*/g, (_, p1, num) => `${p1}${num}. `);
+    t = t.replace(/\n(\d+\.)/g, "\n\n$1").replace(/\n{3,}/g, "\n\n").trim();
+    return t;
+  }
+
+  const sentences = t
+    .split(/(?<=[.!?])\s+|(?<=다\.)\s+|(?<=니다\.)\s+|(?<=요\.)\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (sentences.length >= 3) {
+    return sentences
+      .slice(0, 5)
+      .map((s, i) => `${i + 1}. ${s}`)
+      .join("\n\n");
+  }
+
+  return t;
+}
+
+function buildAnalysisContext(analysis: TrendAnalysis | null, keyword?: string) {
+  if (!analysis) {
+    return `현재 분석 리포트가 아직 생성되지 않았습니다. 일반적인 산업·시장 관점에서 답변하세요.`;
+  }
+
+  const points = Array.isArray(analysis.keyPoints) ? analysis.keyPoints.join("\n- ") : "";
+  const citations = Array.isArray((analysis as any).citations)
+    ? (analysis as any).citations
+        .slice(0, 5)
+        .map((c: any, idx: number) => `${idx + 1}. ${c?.title || ""}`)
+        .join("\n")
+    : "";
+
+  return `
+[현재 분석 리포트 컨텍스트]
+키워드: ${keyword || ""}
+요약:
+${analysis.summary || ""}
+
+핵심 포인트:
+- ${points || "없음"}
+
+감성: ${analysis.sentiment || "neutral"}
+성장 점수: ${analysis.growthScore ?? 0}
+참고 기사 제목:
+${citations || "없음"}
+`.trim();
+}
+
+function buildConversationContext(messages: Message[]) {
+  const recent = messages.slice(-8);
+  return recent
+    .map((m) => `[${m.role === "user" ? "사용자" : "AI"}] ${m.text}`)
+    .join("\n\n");
+}
+
+function buildPrompt(params: {
+  userText: string;
+  analysis: TrendAnalysis | null;
+  keyword?: string;
+  mode: AnswerMode;
+  length: AnswerLength;
+  includeAnalysis: boolean;
+  messages: Message[];
+}) {
+  const { userText, analysis, keyword, mode, length, includeAnalysis, messages } = params;
+
+  const lengthRule =
+    length === "short"
+      ? "각 번호 항목은 1~2문장으로 답하세요."
+      : length === "medium"
+        ? "각 번호 항목은 2~3문장으로 답하세요."
+        : "각 번호 항목은 3~5문장으로 답하고, 배경과 시사점까지 포함하세요.";
+
+  const modeRule =
+    mode === "deep"
+      ? "표면적 요약보다 배경, 구조적 원인, 시사점, 향후 변화를 자세히 설명하세요."
+      : mode === "strategy"
+        ? "사용자에게 실질적으로 도움이 되는 실행 전략, 우선순위, 대응 방안을 중심으로 답하세요."
+        : mode === "critical"
+          ? "반론, 리스크, 불확실성, 과장 가능성을 적극적으로 검토하며 답하세요."
+          : "균형 잡힌 관점으로 장점과 리스크를 함께 설명하세요.";
+
+  const analysisContext = includeAnalysis ? buildAnalysisContext(analysis, keyword) : "";
+  const conversationContext = buildConversationContext(messages);
+
+  return `
+당신은 동아일보용 고급 AI 분석 어시스턴트입니다.
+질문 의도 파악, 대화 맥락 유지, 산업·시장·전략 관점의 설명에 능숙해야 합니다.
+
+[대화 히스토리]
+${conversationContext || "없음"}
+
+${analysisContext ? `${analysisContext}\n` : ""}
+
+[사용자 질문]
+"${userText}"
+
+[응답 규칙]
+1. 반드시 한국어로 답변하세요.
+2. 무엇보다도 "마지막 사용자 질문"에 직접적으로 답하세요. 추천 질문 예시를 반복하거나 다른 질문으로 바꾸지 마세요.
+3. 사용자가 자유롭게 입력한 질문도 추천 질문과 동일한 수준으로 충실하게 답하세요.
+4. 답변은 "1. ~ 5." 번호 목록 형식으로 작성하세요.
+5. 각 항목 사이에는 빈 줄을 넣어 가독성을 높이세요.
+6. ${lengthRule}
+7. ${modeRule}
+8. 가능하면 "무엇이 중요한지 / 왜 중요한지 / 어떻게 활용할지"가 드러나게 쓰세요.
+9. 질문이 구체적이면 그 구체적 포인트부터 바로 답하세요.
+10. 링크, URL, 마크다운 코드블록은 쓰지 마세요.
+11. 마지막에 군더더기 인사말은 넣지 마세요.
+`.trim();
+}
+
+function copyToClipboard(text: string) {
+  return navigator.clipboard.writeText(cleanForSpeech(text));
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderContent(text: string) {
+  const cleaned = cleanForRender(text);
+  const parts = cleaned.split(/(\*\*.*?\*\*)/g);
+
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith("**") && part.endsWith("**")) {
+          return (
+            <strong key={index} className="font-bold text-inherit">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={index}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+
+function normalizeSuggestion(text: string) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function shortenPoint(text: string, max = 46) {
+  const t = normalizeSuggestion(String(text || "").replace(/^\d+\.\s*/, ""));
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max - 1).trim() + "…" : t;
+}
+
+function buildSuggestionPool(analysis: TrendAnalysis | null, keyword?: string) {
+  const pool: string[] = [];
+  const add = (value: string) => {
+    const v = normalizeSuggestion(value);
+    if (!v) return;
+    if (pool.includes(v)) return;
+    pool.push(v);
+  };
+
+  if (keyword) {
+    add(`"${keyword}"의 핵심 흐름을 한 번 더 쉽게 설명해줘`);
+    add(`"${keyword}"의 가장 큰 리스크 3가지는 뭐야?`);
+    add(`"${keyword}"를 사업 관점에서 해석해줘`);
+    add(`"${keyword}"의 향후 6개월 시나리오를 알려줘`);
+    add(`"${keyword}" 관련해서 지금 가장 중요한 변수는 뭐야?`);
+    add(`"${keyword}"가 투자 심리에 어떤 영향을 줄 수 있어?`);
+  }
+
+  if (analysis?.summary) {
+    add(`현재 분석 결과를 5줄로 다시 정리해줘`);
+    add(`이 분석에서 가장 중요한 한 줄 결론은 뭐야?`);
+  }
+
+  if (Array.isArray(analysis?.keyPoints)) {
+    analysis.keyPoints.slice(0, 4).forEach((point, idx) => {
+      const short = shortenPoint(point);
+      if (!short) return;
+      add(`"${short}" 이 부분을 더 자세히 설명해줘`);
+      add(`"${short}" 이 내용이 왜 중요한지 설명해줘`);
+      if (idx === 0) add(`첫 번째 핵심 포인트를 쉽게 풀어서 설명해줘`);
+    });
+  }
+
+  if (analysis?.sentiment) {
+    add(`이번 이슈를 ${analysis.sentiment === "positive" ? "낙관적" : analysis.sentiment === "negative" ? "보수적" : "중립적"} 관점에서 다시 설명해줘`);
+  }
+
+  add("핵심 리스크를 정리해줘");
+  add("실행 전략을 제안해줘");
+  add("반대 관점도 같이 설명해줘");
+  add("향후 시장 영향을 예측해줘");
+
+  return pool;
 }
 
 const ChatWidget: React.FC<Props> = ({ analysis, keyword, externalCommand }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'assistant', text: '안녕하세요. 동아일보 AI입니다. 분석 결과에 대해 궁금한 점이 있으신가요?' }
+    { id: uid(), role: "assistant", text: INITIAL_ASSISTANT_MESSAGE, createdAt: Date.now() },
   ]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [speakingMsgIndex, setSpeakingMsgIndex] = useState<number | null>(null);
-  const [isListening, setIsListening] = useState(false); 
+  const [isListening, setIsListening] = useState(false);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  const [answerMode, setAnswerMode] = useState<AnswerMode>("balanced");
+  const [answerLength, setAnswerLength] = useState<AnswerLength>("medium");
+  const [includeAnalysis, setIncludeAnalysis] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [usedSuggestions, setUsedSuggestions] = useState<string[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const recognitionRef = useRef<any>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const suggestionPool = useMemo(() => buildSuggestionPool(analysis, keyword), [analysis, keyword]);
+
+  const quickSuggestions = useMemo(() => {
+    const asked = new Set(
+      messages
+        .filter((m) => m.role === "user")
+        .map((m) => normalizeSuggestion(m.text))
+        .filter(Boolean)
+    );
+    const used = new Set(usedSuggestions.map(normalizeSuggestion));
+    return suggestionPool
+      .filter((s) => {
+        const key = normalizeSuggestion(s);
+        return key && !asked.has(key) && !used.has(key);
+      })
+      .slice(0, 4);
+  }, [suggestionPool, messages, usedSuggestions]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isOpen, isLoading, suggestions]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading, isOpen]);
 
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 130)}px`;
     }
   }, [input]);
 
   useEffect(() => {
-    if (keyword && analysis) {
-      setSuggestions([
-        `"${keyword}"의 향후 1년 전망은?`,
-        `"${keyword}"와 관련된 경쟁사는?`,
-        `"${keyword}"의 주요 리스크 요인은?`
-      ]);
-    }
-  }, [keyword, analysis]);
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (Array.isArray(saved?.messages) && saved.messages.length) {
+        setMessages(saved.messages);
+      }
+      if (typeof saved?.answerMode === "string") setAnswerMode(saved.answerMode);
+      if (typeof saved?.answerLength === "string") setAnswerLength(saved.answerLength);
+      if (typeof saved?.includeAnalysis === "boolean") setIncludeAnalysis(saved.includeAnalysis);
+    } catch {}
+  }, []);
 
   useEffect(() => {
-    if (externalCommand) {
+    setUsedSuggestions([]);
+  }, [keyword, analysis?.summary, JSON.stringify(analysis?.keyPoints || [])]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ messages, answerMode, answerLength, includeAnalysis })
+      );
+    } catch {}
+  }, [messages, answerMode, answerLength, includeAnalysis]);
+
+  useEffect(() => {
+    if (externalCommand?.text) {
       setIsOpen(true);
       handleSend(externalCommand.text);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalCommand]);
 
   useEffect(() => {
     if (!isOpen) {
       window.speechSynthesis.cancel();
-      setSpeakingMsgIndex(null);
+      setSpeakingMsgId(null);
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {}
+      }
       setIsListening(false);
     }
   }, [isOpen]);
 
-  // [수정됨] window.confirm 제거하여 즉시 초기화
   const handleReset = () => {
     window.speechSynthesis.cancel();
-    setMessages([{ role: 'assistant', text: '대화가 초기화되었습니다. 새로운 질문을 입력해주세요.' }]);
-    setSuggestions([]);
+    setSpeakingMsgId(null);
+    setMessages([
+      {
+        id: uid(),
+        role: "assistant",
+        text: "대화를 초기화했습니다. 새로운 질문을 입력해 주세요.",
+        createdAt: Date.now(),
+      },
+    ]);
+    setUsedSuggestions([]);
   };
 
   const handleDownloadChat = () => {
-    if (messages.length <= 1) {
-      alert("저장할 대화 내용이 없습니다.");
+    const chatContent = messages
+      .map((m) => `[${m.role === "user" ? "사용자" : "AI"}] ${cleanForSpeech(m.text)}`)
+      .join("\n\n");
+    downloadTextFile(`TrendPulse_AI_Chat_${new Date().toLocaleDateString("ko-KR")}.txt`, chatContent);
+  };
+
+  const handleCopy = async (text: string) => {
+    try {
+      await copyToClipboard(text);
+      console.log("복사 완료");
+    } catch {
+      console.error("복사 실패");
+    }
+  };
+
+  const handleSpeak = (text: string, id: string) => {
+    if (speakingMsgId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingMsgId(null);
       return;
     }
-    const chatContent = messages.map(m => 
-      `[${m.role === 'user' ? '사용자' : 'AI'}] ${m.text}`
-    ).join('\n\n');
 
-    const blob = new Blob([chatContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `DongA_AI_Briefing_${new Date().toLocaleDateString()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleRegenerate = () => {
-    if (isLoading || messages.length < 2) return;
-    
-    // Fix: Replacement for findLastIndex which is not available in older targets
-    let lastUserMessageIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        lastUserMessageIndex = i;
-        break;
-      }
-    }
-
-    if (lastUserMessageIndex !== -1) {
-      const lastUserText = messages[lastUserMessageIndex].text;
-      setMessages(prev => prev.slice(0, lastUserMessageIndex + 1));
-      setIsLoading(true);
-      requestAI(lastUserText);
-    }
-  };
-
-  const handleSpeak = (text: string, index: number) => {
-    if (speakingMsgIndex === index) {
-      window.speechSynthesis.cancel();
-      setSpeakingMsgIndex(null);
-    } else {
-      window.speechSynthesis.cancel();
-      const cleanText = text.replace(/(https?:\/\/[^\s\)]+)/g, '').replace(/\*\*/g, '').replace(/\(출처.*?\)/g, '');
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.lang = 'ko-KR';
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      utterance.onend = () => setSpeakingMsgIndex(null);
-      setSpeakingMsgIndex(index);
-      window.speechSynthesis.speak(utterance);
-    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(cleanForSpeech(text));
+    utterance.lang = "ko-KR";
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setSpeakingMsgId(null);
+    setSpeakingMsgId(id);
+    window.speechSynthesis.speak(utterance);
   };
 
   const toggleVoiceInput = () => {
-    if (isListening) {
+    if (isListening && recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
       setIsListening(false);
       return;
     }
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
     if (!SpeechRecognition) {
-      alert("이 브라우저는 음성 인식을 지원하지 않습니다. (Chrome 사용 권장)");
+      alert("이 브라우저는 음성 인식을 지원하지 않습니다. Chrome 사용을 권장합니다.");
       return;
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'ko-KR';
-    recognition.interimResults = false;
+    recognitionRef.current = recognition;
+    recognition.lang = "ko-KR";
+    recognition.interimResults = true;
     recognition.maxAlternatives = 1;
+    recognition.continuous = false;
 
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
-    
+
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(prev => prev + (prev ? ' ' : '') + transcript);
+      let transcript = "";
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setInput(transcript.trim());
     };
 
     recognition.onerror = (event: any) => {
       console.error("Speech recognition error", event.error);
       setIsListening(false);
-      
-      if (event.error === 'not-allowed') {
-        alert("⚠️ 마이크 권한이 차단되었습니다.\n브라우저 주소창 옆의 '자물쇠' 아이콘을 눌러 마이크 권한을 허용해주세요.");
-      } else if (event.error === 'no-speech') {
-        // 음성이 감지되지 않음 (조용히 종료)
-      } else {
-        alert("음성 인식 중 오류가 발생했습니다: " + event.error);
+      if (event.error === "not-allowed") {
+        alert("마이크 권한이 차단되었습니다. 브라우저 설정에서 마이크 접근을 허용해주세요.");
       }
     };
 
@@ -183,310 +507,383 @@ const ChatWidget: React.FC<Props> = ({ analysis, keyword, externalCommand }) => 
     }
   };
 
-  const handleFeedback = (type: 'up' | 'down') => {
-    // 샌드박스 환경에서는 alert가 차단될 수 있으므로 console.log로 대체하거나 UI 피드백 권장
-    console.log(type === 'up' ? "User liked the response" : "User disliked the response");
+  const handleFeedback = (type: "up" | "down") => {
+    console.log(type === "up" ? "User liked response" : "User disliked response");
   };
 
-  const renderContent = (text: string) => {
-    if (!text) return "";
-    const cleaned = text
-      .replace(/(https?:\/\/[^\s\)]+)/g, '')
-      .replace(/\(출처.*?\)/g, '')
-      .replace(/###/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/(?:\r\n|\r|\n)/g, '\n')
-      .trim();
+  const requestAI = async (userText: string, historyBase?: Message[]) => {
+    const history = historyBase || messages;
 
-    const parts = cleaned.split(/(\*\*.*?\*\*)/g);
-    
-    return (
-      <>
-        {parts.map((part, index) => {
-          if (part.startsWith('**') && part.endsWith('**')) {
-            return <strong key={index} className="font-bold text-inherit">{part.slice(2, -2)}</strong>;
-          }
-          return <span key={index}>{part}</span>;
-        })}
-      </>
-    );
-  };
-
-  const handleCopy = async (text: string) => {
     try {
-      const plainText = text.replace(/(https?:\/\/[^\s\)]+)/g, '').replace(/\*\*/g, '').replace(/\\n/g, '\n');
-      await navigator.clipboard.writeText(plainText);
-      // alert 대신 콘솔이나 토스트 메시지를 사용하는 것이 좋습니다. 여기선 콘솔로 대체
-      console.log("복사 완료");
-    } catch (err) {
-      console.error("복사 실패");
-    }
-  };
+      const prompt = buildPrompt({
+        userText,
+        analysis,
+        keyword,
+        mode: answerMode,
+        length: answerLength,
+        includeAnalysis,
+        messages: history,
+      });
 
-  // ✅ [추가] 모델이 줄글로 답해도 1~5 번호/줄바꿈으로 강제 정리
-  const formatAssistantAnswer = (text: string) => {
-    if (!text) return text;
+      const response = await generateExpandedContent(`다음 마지막 사용자 질문에 직접 답하세요. 질문을 다른 형태로 바꾸지 말고, 질문에서 요구한 포인트를 먼저 설명하세요.\n\n${prompt}`, "sns", "");
+      const formatted = formatAssistantAnswer(String(response || ""));
 
-    // 기본 정리
-    let t = text
-      .replace(/\r\n/g, '\n')
-      .replace(/\\n/g, '\n')
-      .trim();
-
-    // 이미 번호 목록이 있으면: 번호 앞 줄바꿈 보정
-    const hasNumbering = /(^|\n)\s*1\.\s/.test(t);
-    if (hasNumbering) {
-      t = t
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/(\n|^)\s*(\d+)\.\s*/g, (m, p1, num) => `${p1}${num}. `);
-      // 번호 사이에 빈줄 넣기(가독성)
-      t = t.replace(/\n(\d+\.)/g, '\n\n$1').replace(/\n{3,}/g, '\n\n').trim();
-      return t;
-    }
-
-    // 줄바꿈이 거의 없고 너무 긴 경우: 문장 단위로 잘라 1~5로 재구성
-    const tooLongOneParagraph = t.length > 160 && !t.includes('\n');
-    if (tooLongOneParagraph) {
-      // 한국어/영문 문장 분리(최대한 보수적으로)
-      const sentences = t
-        .split(/(?<=[.!?])\s+|(?<=다\.)\s+|(?<=니다\.)\s+|(?<=요\.)\s+/)
-        .map(s => s.trim())
-        .filter(Boolean);
-
-      const picked = sentences.slice(0, 5);
-      if (picked.length >= 2) {
-        return picked.map((s, i) => `${i + 1}. ${s}`).join('\n\n').trim();
-      }
-
-      // 문장 분리가 실패하면 길이 기준으로 5등분
-      const chunks: string[] = [];
-      const target = Math.ceil(t.length / 5);
-      for (let i = 0; i < 5; i++) {
-        const start = i * target;
-        const end = Math.min((i + 1) * target, t.length);
-        const chunk = t.slice(start, end).trim();
-        if (chunk) chunks.push(chunk);
-      }
-      return chunks.slice(0, 5).map((c, i) => `${i + 1}. ${c}`).join('\n\n').trim();
-    }
-
-    // 그 외: 적당히 문단만 정리
-    return t.replace(/\n{3,}/g, '\n\n').trim();
-  };
-
-  const requestAI = async (text: string) => {
-    try {
-      let prompt = `사용자 질문: "${text}"\n\n`;
-      if (analysis) {
-        prompt += `[현재 분석 리포트 컨텍스트]\n키워드: ${keyword}\n요약: ${analysis.summary}\n핵심 포인트: ${analysis.keyPoints.join(', ')}\n\n`;
-        prompt += `
-위 분석 내용을 바탕으로 사용자의 질문에 답변해줘.
-
-[출력 규칙 - 매우 중요]
-- 답변은 반드시 "1. ~ 5." 번호 목록 형태로 작성 (총 5개)
-- 각 항목은 1~2문장, 간결하게
-- 각 번호 항목 사이에 줄바꿈(빈 줄) 포함해서 가독성 좋게
-- 출처 링크나 URL을 절대 포함하지 마
-- 불필요한 서론/마무리 인사 없이 핵심만
-`;
-      } else {
-        prompt += `
-아직 분석 리포트가 생성되지 않았습니다. 일반적인 트렌드 전문가로서 답변해줘.
-
-[출력 규칙 - 매우 중요]
-- 답변은 반드시 "1. ~ 5." 번호 목록 형태로 작성 (총 5개)
-- 각 항목은 1~2문장, 간결하게
-- 각 번호 항목 사이에 줄바꿈(빈 줄) 포함해서 가독성 좋게
-- 출처 링크나 URL을 절대 포함하지 마
-- 불필요한 서론/마무리 인사 없이 핵심만
-`;
-      }
-
-      // Fix: Now uses the updated generateExpandedContent which supports 3 arguments
-      const response = await generateExpandedContent(prompt, 'sns', '');
-      const formatted = formatAssistantAnswer(response);
-
-      setMessages(prev => [...prev, { role: 'assistant', text: formatted }]);
-      
-      if (keyword) {
-        setSuggestions([
-          `"${keyword}" 관련 최신 뉴스 요약해줘`,
-          `이 트렌드가 내 비즈니스에 미칠 영향은?`,
-          `더 자세한 데이터나 통계가 있어?`
-        ]);
-      }
-    } catch (error) {
-      setMessages(prev => [...prev, { role: 'assistant', text: "죄송합니다. 답변을 생성하는 중 오류가 발생했습니다." }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          role: "assistant",
+          text: formatted || "응답을 생성하지 못했습니다.",
+          createdAt: Date.now(),
+        },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          role: "assistant",
+          text: "죄송합니다. 답변을 생성하는 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+          createdAt: Date.now(),
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleSend = async (textToSend?: string) => {
-    const text = textToSend || input;
-    if (!text.trim()) return;
 
-    setMessages(prev => [...prev, { role: 'user', text }]);
-    setInput('');
-    setSuggestions([]);
-    setIsLoading(true);
-    
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-
-    await requestAI(text);
+  const handleSuggestionClick = async (suggestion: string) => {
+    const normalized = normalizeSuggestion(suggestion);
+    setUsedSuggestions((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    await handleSend(suggestion);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleSend = async (textToSend?: string) => {
+    const text = (textToSend || input).trim();
+    if (!text || isLoading) return;
+
+    const userMessage: Message = {
+      id: uid(),
+      role: "user",
+      text,
+      createdAt: Date.now(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
+    setIsLoading(true);
+
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+
+    await requestAI(text, [...messages, userMessage]);
+  };
+
+  const handleRegenerate = async () => {
+    if (isLoading) return;
+
+    let lastUser: Message | null = null;
+    const trimmed: Message[] = [];
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (!lastUser && messages[i].role === "user") {
+        lastUser = messages[i];
+        trimmed.unshift(...messages.slice(0, i + 1));
+        break;
+      }
+    }
+
+    if (!lastUser) return;
+
+    setMessages(trimmed);
+    setIsLoading(true);
+    await requestAI(lastUser.text, trimmed);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   };
+
+  const currentModeMeta = MODE_META[answerMode];
 
   return (
     <>
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-8 right-8 w-16 h-16 bg-gray-900 text-white rounded-full shadow-2xl flex items-center justify-center hover:bg-black transition-all hover:scale-110 z-50 group"
+          className="fixed bottom-8 right-8 z-50 flex h-16 w-16 items-center justify-center rounded-full bg-gray-900 text-white shadow-2xl transition-all hover:scale-110 hover:bg-black"
         >
-          <MessageSquare size={28} className="group-hover:animate-pulse" />
-          <span className="absolute -top-2 -right-2 w-4 h-4 bg-red-500 rounded-full animate-ping"></span>
+          <MessageSquare size={28} />
+          <span className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#0071e3] px-1 text-[10px] font-black text-white">
+            AI
+          </span>
         </button>
       )}
 
       {isOpen && (
-        <div className="fixed bottom-8 right-8 w-[400px] h-[600px] bg-white rounded-[32px] shadow-2xl flex flex-col overflow-hidden z-50 animate-in slide-in-from-bottom-10 fade-in duration-300 border border-gray-200">
-          
-          {/* 챗봇 헤더 */}
-          <div className="p-6 bg-gray-900 text-white flex justify-between items-center shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center p-1.5 overflow-hidden">
-                <img 
-                  src={DONGA_LOGO_URL} 
-                  alt="AI 로고" 
-                  className="w-full h-full object-contain" 
-                />
+        <div className="fixed bottom-6 right-6 z-50 flex h-[720px] w-[460px] flex-col overflow-hidden rounded-[32px] border border-gray-200 bg-white shadow-2xl">
+          {/* Header */}
+          <div className="shrink-0 bg-gray-900 px-5 py-4 text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-white p-1.5">
+                  <img src={DONGA_LOGO_URL} alt="AI 로고" className="h-full w-full object-contain" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black">동아일보 AI 비서</h3>
+                  <p className="mt-0.5 text-xs text-white/70">
+                    {keyword ? `현재 주제: ${keyword}` : "리포트 기반 대화 지원"}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-bold text-lg">동아일보 AI</h3>
-                <p className="text-xs text-gray-400 flex items-center gap-1">
-                  <span className="w-2 h-2 bg-green-500 rounded-full"></span> Online
-                </p>
-              </div>
+
+              <button
+                onClick={() => setIsOpen(false)}
+                className="rounded-full bg-white/10 p-2 transition hover:bg-white/20"
+              >
+                <X size={18} />
+              </button>
             </div>
-            
-            <div className="flex gap-1">
-              <button onClick={handleDownloadChat} className="p-2 hover:bg-white/20 rounded-full transition-colors" title="대화 내용 저장">
-                <Download size={18} className="text-gray-300 hover:text-white" />
+
+            <div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1">
+              {(Object.keys(MODE_META) as AnswerMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setAnswerMode(mode)}
+                  className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                    answerMode === mode
+                      ? "bg-white text-gray-900"
+                      : "bg-white/10 text-white hover:bg-white/20"
+                  }`}
+                >
+                  {MODE_META[mode].icon}
+                  {MODE_META[mode].label}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="text-[11px] font-semibold text-white/75">
+                {currentModeMeta.desc}
+              </div>
+              <button
+                onClick={() => setShowSettings((v) => !v)}
+                className="flex items-center gap-1 rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-white/20"
+              >
+                설정 <ChevronDown size={14} className={`transition ${showSettings ? "rotate-180" : ""}`} />
               </button>
-              <button onClick={handleReset} className="p-2 hover:bg-white/20 rounded-full transition-colors" title="대화 초기화">
-                <Trash2 size={18} className="text-gray-300 hover:text-white" />
-              </button>
-              <button onClick={() => setIsOpen(false)} className="p-2 hover:bg-white/20 rounded-full transition-colors">
-                <X size={20} />
-              </button>
+            </div>
+
+            {showSettings && (
+              <div className="mt-4 rounded-2xl bg-white/8 p-3">
+                <div className="mb-2 text-[11px] font-bold text-white/80">답변 길이</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["short", "medium", "long"] as AnswerLength[]).map((len) => (
+                    <button
+                      key={len}
+                      onClick={() => setAnswerLength(len)}
+                      className={`rounded-xl px-3 py-2 text-xs font-bold transition ${
+                        answerLength === len
+                          ? "bg-white text-gray-900"
+                          : "bg-white/10 text-white"
+                      }`}
+                    >
+                      {len === "short" ? "짧게" : len === "medium" ? "보통" : "길게"}
+                    </button>
+                  ))}
+                </div>
+
+                <label className="mt-3 flex items-center gap-2 text-[12px] font-semibold text-white/80">
+                  <input
+                    type="checkbox"
+                    checked={includeAnalysis}
+                    onChange={(e) => setIncludeAnalysis(e.target.checked)}
+                    className="h-4 w-4 rounded"
+                  />
+                  현재 분석 리포트 문맥 포함
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Suggestions */}
+          <div className="shrink-0 border-b border-gray-100 bg-gray-50 px-4 py-3">
+            <div className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-gray-400">
+              <Wand2 size={12} />
+              추천 질문
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {quickSuggestions.length === 0 ? (
+                <div className="text-xs font-semibold text-gray-400">새 질문을 몇 개 더 하거나 새 검색을 하면 추천 질문이 새로 생성됩니다.</div>
+              ) : quickSuggestions.map((s, idx) => (
+                <button
+                  key={`${s}_${idx}`}
+                  onClick={() => handleSuggestionClick(s)}
+                  className="rounded-full border border-gray-200 bg-white px-3 py-2 text-left text-xs font-semibold text-gray-700 transition hover:border-gray-300 hover:bg-gray-100"
+                >
+                  {s}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#F5F5F7]">
-            {messages.map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2`}>
-                <div className={`flex gap-3 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row items-start'}`}>
-                  
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-1 ${msg.role === 'user' ? 'bg-gray-200' : 'bg-[#0071e3] text-white'}`}>
-                    {msg.role === 'user' ? <User size={16} className="text-gray-600" /> : <Bot size={16} />}
-                  </div>
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto bg-[#fafafa] px-4 py-4">
+            <div className="space-y-4">
+              {messages.map((msg) => {
+                const isUser = msg.role === "user";
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                  >
+                    <div className={`flex max-w-[88%] gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
+                      <div
+                        className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                          isUser ? "bg-gray-900 text-white" : "bg-[#0071e3] text-white"
+                        }`}
+                      >
+                        {isUser ? <User size={16} /> : <Bot size={16} />}
+                      </div>
 
-                  <div className="relative group">
-                    <div className={`p-4 rounded-2xl text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words ${
-                      msg.role === 'user' 
-                        ? 'bg-white text-gray-800 rounded-tr-none' 
-                        : 'bg-[#0071e3] text-white rounded-tl-none'
-                    }`}>
-                      {renderContent(msg.text)}
-                    </div>
+                      <div>
+                        <div
+                          className={`rounded-2xl px-4 py-3 shadow-sm ${
+                            isUser
+                              ? "bg-gray-900 text-white"
+                              : "border border-gray-100 bg-white text-gray-900"
+                          }`}
+                        >
+                          <div className="whitespace-pre-line break-words text-[14px] leading-7">
+                            {renderContent(msg.text)}
+                          </div>
+                        </div>
 
-                    {msg.role === 'assistant' && (
-                      <div className="flex gap-3 absolute -bottom-8 left-0 opacity-0 group-hover:opacity-100 transition-opacity z-10 px-1">
-                        <button onClick={(e) => { e.stopPropagation(); handleCopy(msg.text); }} className="text-xs text-gray-400 hover:text-[#0071e3] transition-colors" title="복사"><Copy size={12} /></button>
-                        <button onClick={(e) => { e.stopPropagation(); handleSpeak(msg.text, idx); }} className={`text-xs ${speakingMsgIndex === idx ? 'text-red-500 animate-pulse' : 'text-gray-400 hover:text-[#0071e3]'} transition-colors`} title="듣기">{speakingMsgIndex === idx ? <StopCircle size={12} /> : <Volume2 size={12} />}</button>
-                        <button onClick={() => handleFeedback('up')} className="text-xs text-gray-400 hover:text-green-500 transition-colors"><ThumbsUp size={12} /></button>
-                        <button onClick={() => handleFeedback('down')} className="text-xs text-gray-400 hover:text-red-500 transition-colors"><ThumbsDown size={12} /></button>
-                        {idx === messages.length - 1 && !isLoading && (
-                          <button onClick={(e) => { e.stopPropagation(); handleRegenerate(); }} className="text-xs text-gray-400 hover:text-[#0071e3] transition-colors" title="다시 생성"><RefreshCw size={12} /></button>
+                        {!isUser && (
+                          <div className="mt-2 flex items-center gap-1 text-gray-400">
+                            <button
+                              onClick={() => handleCopy(msg.text)}
+                              className="rounded-lg p-1.5 transition hover:bg-gray-200"
+                              title="복사"
+                            >
+                              <Copy size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleSpeak(msg.text, msg.id)}
+                              className="rounded-lg p-1.5 transition hover:bg-gray-200"
+                              title="읽기"
+                            >
+                              {speakingMsgId === msg.id ? <StopCircle size={14} /> : <Volume2 size={14} />}
+                            </button>
+                            <button
+                              onClick={() => handleFeedback("up")}
+                              className="rounded-lg p-1.5 transition hover:bg-gray-200"
+                              title="좋아요"
+                            >
+                              <ThumbsUp size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleFeedback("down")}
+                              className="rounded-lg p-1.5 transition hover:bg-gray-200"
+                              title="별로예요"
+                            >
+                              <ThumbsDown size={14} />
+                            </button>
+                          </div>
                         )}
                       </div>
-                    )}
+                    </div>
                   </div>
-                </div>
-              </div>
-            ))}
-            
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="flex gap-3 max-w-[85%]">
-                  <div className="w-8 h-8 rounded-full bg-[#0071e3] text-white flex items-center justify-center shrink-0">
-                    <Bot size={16} />
-                  </div>
-                  <div className="p-4 bg-[#0071e3] rounded-2xl rounded-tl-none shadow-sm flex items-center gap-1">
-                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
-                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-                  </div>
-                </div>
-              </div>
-            )}
+                );
+              })}
 
-            {!isLoading && suggestions.length > 0 && (
-              <div 
-                className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 mt-4"
-              >
-                <p className="text-xs font-bold text-gray-400 ml-1">추천 질문</p>
-                {suggestions.map((sug, idx) => (
-                  <button 
-                    key={idx} 
-                    onClick={() => handleSend(sug)}
-                    className="text-left px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 hover:bg-gray-50 hover:border-[#0071e3] hover:text-[#0071e3] transition-all shadow-sm flex items-center justify-between group"
-                  >
-                    {sug}
-                    <ArrowRight size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </button>
-                ))}
-              </div>
-            )}
-            <div ref={messagesEndRef} />
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="flex max-w-[88%] gap-2">
+                    <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0071e3] text-white">
+                      <Bot size={16} />
+                    </div>
+                    <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-500">
+                        <RefreshCw size={14} className="animate-spin" />
+                        분석 중...
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
           </div>
 
-          <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-            <div className="flex gap-2 items-end bg-gray-50 rounded-[24px] px-4 py-3 border border-gray-200 focus-within:border-[#0071e3] focus-within:ring-2 focus-within:ring-[#0071e3]/20 transition-all">
-              
-              {/* 마이크 버튼 */}
-              <button 
-                onClick={toggleVoiceInput}
-                className={`p-2 rounded-full transition-all shrink-0 mb-0.5 ${isListening ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
-                title="음성 인식"
-              >
-                {isListening ? <MicOff size={16} /> : <Mic size={16} />}
-              </button>
+          {/* Footer actions */}
+          <div className="shrink-0 border-t border-gray-100 bg-white px-4 pb-4 pt-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRegenerate}
+                  disabled={isLoading || messages.length < 2}
+                  className="flex items-center gap-1 rounded-full bg-gray-100 px-3 py-2 text-[11px] font-bold text-gray-700 transition hover:bg-gray-200 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} />
+                  다시 생성
+                </button>
 
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={isListening ? "듣고 있습니다..." : "무엇이든 물어보세요..."}
-                className="flex-1 bg-transparent border-none focus:outline-none text-sm py-1 resize-none max-h-[120px] overflow-y-auto custom-scrollbar"
-                rows={1}
-                disabled={isLoading}
-              />
-              <button 
-                onClick={() => handleSend()} 
-                disabled={isLoading || !input.trim()}
-                className="p-2 bg-[#0071e3] text-white rounded-full hover:bg-[#0077ED] disabled:opacity-50 disabled:hover:bg-[#0071e3] transition-all shadow-md shrink-0 mb-0.5"
+                <button
+                  onClick={handleDownloadChat}
+                  className="flex items-center gap-1 rounded-full bg-gray-100 px-3 py-2 text-[11px] font-bold text-gray-700 transition hover:bg-gray-200"
+                >
+                  <Download size={12} />
+                  TXT 저장
+                </button>
+              </div>
+
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-1 rounded-full bg-red-50 px-3 py-2 text-[11px] font-bold text-red-600 transition hover:bg-red-100"
               >
-                <Send size={16} />
+                <Trash2 size={12} />
+                초기화
               </button>
+            </div>
+
+            <div className="rounded-[24px] border border-gray-200 bg-gray-50 p-2">
+              <div className="flex items-end gap-2">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  rows={1}
+                  placeholder="질문을 입력하세요. 예: 이 이슈가 투자 관점에서 왜 중요한가요?"
+                  className="max-h-[130px] min-h-[48px] flex-1 resize-none bg-transparent px-3 py-2 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400"
+                />
+
+                <button
+                  onClick={toggleVoiceInput}
+                  className={`flex h-11 w-11 items-center justify-center rounded-full transition ${
+                    isListening
+                      ? "bg-red-500 text-white hover:bg-red-600"
+                      : "bg-white text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title="음성 입력"
+                >
+                  {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+                </button>
+
+                <button
+                  onClick={() => handleSend()}
+                  disabled={!input.trim() || isLoading}
+                  className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-900 text-white transition hover:bg-black disabled:opacity-40"
+                  title="전송"
+                >
+                  <Send size={18} />
+                </button>
+              </div>
             </div>
           </div>
         </div>

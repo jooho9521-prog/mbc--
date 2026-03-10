@@ -2,12 +2,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Front-only Gmail News Collector (Enterprise Upgrade)
+ * Front-only Gmail News Collector (Enterprise Upgrade++)
  * - Label exact-match + fallback (Google Alerts sender search)
  * - Robust HTML parsing: extract real article links + 주변 문맥(snippet) 추출
  * - URL 정규화(utm 제거 등) + 중복 제거 + 제목 품질 필터 강화
- * - 중요도/신뢰도 스코어링 후 정렬, Top N 반환
+ * - 중요도/신뢰도 스코어링 + (NEW) 최근성(recency) 가중 정렬, hybrid 정렬 지원
  * - 최근 본(생성/클릭) 링크는 localStorage 기반으로 자동 제외
+ * - (NEW) publishedAt 추정(메일 Date 헤더 + 본문 날짜 패턴) + ISO 통일
  *
  * NOTE: Front-only 환경 특성상 "기사 원문 크롤링"은 CORS 이슈로 제외.
  */
@@ -24,7 +25,17 @@ export interface GmailNewsItem {
   link: string;
   source: string;
   score?: number;
+
+  /**
+   * publishedAt:
+   * - 원칙: Gmail 메일 Date 헤더(=수신 시점) 기반
+   * - 보조: 본문/스니펫 내 날짜 패턴이 있으면 추정
+   * - ISO string (e.g. 2026-02-27T10:11:12.000Z)
+   */
   publishedAt?: string;
+
+  /** 내부 계산용 (ms) */
+  _ts?: number;
 }
 
 /** -----------------------------
@@ -55,6 +66,7 @@ const BLOCKED_URL_KEYWORDS = [
   "policies.google",
   "myaccount.google",
   "mail.google.com",
+  "accounts.youtube.com",
 ];
 
 function isBlockedDomain(url: string) {
@@ -84,6 +96,9 @@ const DEFAULT_CONFIG = {
   seenTtlDays: 7,
   minTitleLength: 12,
   snippetMaxLen: 320,
+
+  /** NEW: hybrid 정렬 시 recency 가중 */
+  recencyWeight: 0.55, // 0~1 (최근성 비중)
 };
 
 const CONFIG_STORAGE_KEY = "dongA_gmail_news_config_v1";
@@ -143,6 +158,15 @@ export const getNewsEmails = (opts?: {
   excludeSeen?: boolean;
   maxMessagesToRead?: number;
   maxItemsToReturn?: number;
+
+  /** NEW: 정렬 방식 */
+  sortBy?: "hybrid" | "score" | "recent";
+
+  /** NEW: fallbackQuery를 자동 생성할 때 사용할 최근 n일 */
+  daysBack?: number;
+
+  /** NEW: 점수 계산 힌트(키워드) */
+  keywordHint?: string;
 }): Promise<GmailNewsItem[]> => {
   return new Promise((resolve, reject) => {
     if (!tokenClient)
@@ -152,8 +176,8 @@ export const getNewsEmails = (opts?: {
     const config = loadConfig();
 
     const labelName = (opts?.labelName ?? config.preferredLabelName).trim();
-    const queryOverride = (opts?.queryOverride ?? config.fallbackQuery).trim();
     const excludeSeen = opts?.excludeSeen !== false;
+
     const maxMessagesToRead = Math.max(
       1,
       Math.min(opts?.maxMessagesToRead ?? config.maxMessagesToRead, 30)
@@ -162,6 +186,17 @@ export const getNewsEmails = (opts?: {
       1,
       Math.min(opts?.maxItemsToReturn ?? config.maxItemsToReturn, 100)
     );
+
+    const daysBack = Math.max(1, Math.min(opts?.daysBack ?? 14, 60));
+
+    // fallbackQuery는 override가 없으면 daysBack 기반으로 생성
+    const fallbackQuery = (
+      opts?.queryOverride ??
+      `newer_than:${daysBack}d (from:googlealerts-noreply@google.com OR from:googlealerts-noreply OR subject:"Google 알림" OR subject:"Google Alerts")`
+    ).trim();
+
+    const sortBy = opts?.sortBy ?? "hybrid";
+    const keywordHint = (opts?.keywordHint ?? keywordHintFromContext(labelName)).trim();
 
     tokenClient.callback = async (resp: any) => {
       if (resp?.error !== undefined) {
@@ -172,7 +207,7 @@ export const getNewsEmails = (opts?: {
         const messageIds = await listMessageIds(
           gapi,
           labelName,
-          queryOverride,
+          fallbackQuery,
           maxMessagesToRead
         );
 
@@ -196,7 +231,8 @@ export const getNewsEmails = (opts?: {
           const payload = details?.result?.payload;
           if (!payload) continue;
 
-          const { decodedHtml, decodedText, subject } = extractEmailBodies(payload);
+          const { decodedHtml, decodedText, subject, messageDateIso } =
+            extractEmailBodies(payload);
 
           const extracted = extractArticlesFromEmail({
             decodedHtml,
@@ -204,6 +240,7 @@ export const getNewsEmails = (opts?: {
             subject,
             minTitleLength: config.minTitleLength,
             snippetMaxLen: config.snippetMaxLen,
+            messageDateIso,
           });
 
           items.push(...extracted);
@@ -218,17 +255,29 @@ export const getNewsEmails = (opts?: {
 
         const deduped = dedupeByNormalizedUrl(normalized);
 
-        const filteredSeen = excludeSeen ? filterSeen(deduped, config.seenTtlDays) : deduped;
+        const filteredSeen = excludeSeen
+          ? filterSeen(deduped, config.seenTtlDays)
+          : deduped;
 
-        const scored = filteredSeen
-          .map((it) => ({ ...it, score: scoreItem(it, keywordHintFromContext(labelName)) }))
-          .sort((a, b) => (b.score || 0) - (a.score || 0));
+        // ✅ score + timestamp 계산
+        const enriched = filteredSeen.map((it) => {
+          const ts = toTimestamp(it.publishedAt);
+          return {
+            ...it,
+            _ts: ts,
+            score: scoreItem(it, keywordHint),
+          };
+        });
 
-        const result = scored.slice(0, maxItemsToReturn);
+        // ✅ 정렬 업그레이드
+        const sorted = sortItems(enriched, sortBy, config.recencyWeight);
+
+        const result = sorted.slice(0, maxItemsToReturn);
 
         if (excludeSeen) markSeen(result, config.seenTtlDays);
 
-        resolve(result);
+        // 내부값 제거(원하면 유지해도 됨)
+        resolve(result.map(stripInternal));
       } catch (err: any) {
         reject(new Error(err?.message || "오류가 발생했습니다."));
       }
@@ -309,6 +358,7 @@ function extractEmailBodies(payload: any): {
   decodedHtml: string;
   decodedText: string;
   subject: string;
+  messageDateIso: string;
 } {
   let htmlBody = "";
   let textBody = "";
@@ -330,10 +380,14 @@ function extractEmailBodies(payload: any): {
   const headers = payload?.headers || [];
   const subject = headers.find((h: any) => h?.name === "Subject")?.value || "제목 없음";
 
+  // ✅ NEW: Date 헤더로 publishedAt 기본값(메일 수신시간) 확보
+  const rawDate = headers.find((h: any) => h?.name === "Date")?.value || "";
+  const messageDateIso = toIsoSafe(rawDate) || new Date().toISOString();
+
   const decodedHtml = decodeBase64Url(htmlBody);
   const decodedText = decodeBase64Url(textBody);
 
-  return { decodedHtml, decodedText, subject };
+  return { decodedHtml, decodedText, subject, messageDateIso };
 }
 
 function decodeBase64Url(data: string) {
@@ -341,7 +395,9 @@ function decodeBase64Url(data: string) {
   try {
     let base64 = data.replace(/-/g, "+").replace(/_/g, "/");
     while (base64.length % 4) base64 += "=";
-    return decodeURIComponent(escape(atob(base64)));
+    // 일부 환경에서 escape/decodeURIComponent 조합이 깨질 수 있어 방어
+    const decoded = atob(base64);
+    return safeDecodeUtf8(decoded);
   } catch {
     try {
       return atob(data);
@@ -351,14 +407,29 @@ function decodeBase64Url(data: string) {
   }
 }
 
+function safeDecodeUtf8(str: string) {
+  try {
+    // percent-encoding 방식으로 UTF-8 복원
+    const esc = Array.from(str)
+      .map((c) => "%" + c.charCodeAt(0).toString(16).padStart(2, "0"))
+      .join("");
+    return decodeURIComponent(esc);
+  } catch {
+    // 최후 fallback
+    return str;
+  }
+}
+
 function extractArticlesFromEmail(args: {
   decodedHtml: string;
   decodedText: string;
   subject: string;
   minTitleLength: number;
   snippetMaxLen: number;
+  messageDateIso: string; // ✅ NEW
 }): GmailNewsItem[] {
-  const { decodedHtml, decodedText, subject, minTitleLength, snippetMaxLen } = args;
+  const { decodedHtml, decodedText, subject, minTitleLength, snippetMaxLen, messageDateIso } =
+    args;
 
   const out: GmailNewsItem[] = [];
   let found = false;
@@ -386,6 +457,7 @@ function extractArticlesFromEmail(args: {
               ((a as any).getAttribute?.("title") || "")
           ) || "";
 
+        // ✅ NEW: 문맥 추출 개선(부모/형제 텍스트를 더 적극 활용)
         const snippet = extractSnippetAroundAnchor(a, snippetMaxLen);
 
         // ✅ 링크 필터: 기사형 URL인지 + 차단 대상인지
@@ -400,12 +472,18 @@ function extractArticlesFromEmail(args: {
         if (isNonArticleSystemLink(url)) continue;
 
         const source = safeHostname(url) || "웹 뉴스";
+
+        // ✅ NEW: publishedAt 추정(본문 날짜 패턴 우선, 없으면 messageDateIso)
+        const publishedAt = inferPublishedAt(snippet, decodedText, messageDateIso);
+
         out.push({
           title: titleCandidate,
           link: url,
           source,
           body: buildBodyForAI(snippet, decodedText, snippetMaxLen),
+          publishedAt,
         });
+
         found = true;
       }
     } catch (e) {
@@ -429,6 +507,7 @@ function extractArticlesFromEmail(args: {
         link: u,
         source: safeHostname(u) || "웹 뉴스",
         body: decodedText.substring(0, snippetMaxLen),
+        publishedAt: inferPublishedAt("", decodedText, messageDateIso),
       });
     }
     found = out.length > 0;
@@ -440,6 +519,7 @@ function extractArticlesFromEmail(args: {
       link: "",
       source: "Gmail 원문",
       body: decodedText.substring(0, snippetMaxLen),
+      publishedAt: messageDateIso,
     });
   }
 
@@ -447,16 +527,47 @@ function extractArticlesFromEmail(args: {
 }
 
 function extractSnippetAroundAnchor(anchor: Element, maxLen: number) {
+  // 기존: anchor/parent/grand만 사용 -> 개선: sibling/next 텍스트도 활용
   const parent = anchor.parentElement;
   const grand = parent?.parentElement;
 
+  const siblingText = (() => {
+    const p = parent;
+    if (!p) return "";
+    const sibs = Array.from(p.children || []);
+    const idx = sibs.indexOf(anchor as any);
+    const around = [
+      sibs[idx - 1]?.textContent || "",
+      sibs[idx + 1]?.textContent || "",
+    ]
+      .join(" ")
+      .trim();
+    return cleanInlineText(around);
+  })();
+
   const candidates = [
     cleanInlineText(anchor.textContent || ""),
+    siblingText,
     parent ? cleanInlineText(parent.textContent || "") : "",
     grand ? cleanInlineText(grand.textContent || "") : "",
   ].filter(Boolean);
 
-  const best = candidates.sort((a, b) => b.length - a.length)[0] || "";
+  // 가장 길다고 무조건 좋은 게 아니라, 너무 길면 노이즈
+  const best =
+    candidates
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 20)
+      .sort((a, b) => {
+        // “기사형 문장” 우선: 길이 적당(40~260)
+        const score = (s: string) => {
+          const len = s.length;
+          const mid = len >= 40 && len <= 260 ? 50 : 0;
+          const bonus = /[.?!。]|다\.$|니다\.$/.test(s) ? 10 : 0;
+          return mid + bonus + Math.min(len, 260) / 10;
+        };
+        return score(b) - score(a);
+      })[0] || candidates.sort((a, b) => b.length - a.length)[0] || "";
+
   return best.length > maxLen ? best.slice(0, maxLen) : best;
 }
 
@@ -514,6 +625,7 @@ function cleanInlineText(text: string) {
 function unwrapGoogleRedirect(url: string) {
   if (!url) return "";
 
+  // 1) google.com/url?q=
   if (url.includes("google.com/url?q=")) {
     try {
       return decodeURIComponent(url.split("url?q=")[1].split("&")[0]);
@@ -522,6 +634,7 @@ function unwrapGoogleRedirect(url: string) {
     }
   }
 
+  // 2) google.com/url?url= / q=
   if (url.includes("google.com/url?")) {
     try {
       const u = new URL(url);
@@ -530,6 +643,16 @@ function unwrapGoogleRedirect(url: string) {
     } catch {
       return url;
     }
+  }
+
+  // 3) Google Alerts common redirect: https://www.google.com/url?sa=t&url=...
+  try {
+    const u = new URL(url);
+    const sa = u.searchParams.get("sa");
+    const target = u.searchParams.get("url") || u.searchParams.get("q");
+    if (sa && target) return decodeURIComponent(target);
+  } catch {
+    // ignore
   }
 
   return url;
@@ -573,6 +696,11 @@ function isLikelyArticleUrl(url: string) {
     if (!u.hostname.includes(".")) return false;
     if (!u.pathname || u.pathname === "/" || u.pathname.length < 2) return false;
     if (!/^https?:$/i.test(u.protocol)) return false;
+
+    // 너무 짧은 path는 기사일 확률 낮음
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 1) return false;
+
     return true;
   } catch {
     return false;
@@ -594,12 +722,16 @@ function normalizeItem(item: GmailNewsItem): GmailNewsItem {
 
   const source = safeHostname(normalizedLink) || item.source || "웹 뉴스";
 
+  // publishedAt도 ISO로 정규화
+  const publishedAt = item.publishedAt ? toIsoSafe(item.publishedAt) : undefined;
+
   return {
     ...item,
     link: normalizedLink,
     source,
     title: cleanInlineText(item.title || ""),
     body: cleanInlineText(item.body || ""),
+    publishedAt: publishedAt || item.publishedAt,
   };
 }
 
@@ -653,8 +785,11 @@ function pickBetterItem(a: GmailNewsItem, b: GmailNewsItem) {
   const aBody = (a.body || "").length;
   const bBody = (b.body || "").length;
 
-  const aScore = aTitle * 2 + aBody;
-  const bScore = bTitle * 2 + bBody;
+  const aHasDate = !!a.publishedAt;
+  const bHasDate = !!b.publishedAt;
+
+  const aScore = aTitle * 2 + aBody + (aHasDate ? 10 : 0);
+  const bScore = bTitle * 2 + bBody + (bHasDate ? 10 : 0);
 
   return bScore > aScore ? b : a;
 }
@@ -750,6 +885,9 @@ function scoreItem(item: GmailNewsItem, keywordHint: string) {
 
   score += urlShapeScore(item.link);
 
+  // NEW: 날짜가 있으면 약간 가산 (최근성은 sort에서 더 크게 반영)
+  if (item.publishedAt) score += 4;
+
   return score;
 }
 
@@ -797,6 +935,124 @@ function urlShapeScore(url: string) {
   } catch {
     return 0;
   }
+}
+
+/** -----------------------------
+ *  Sorting (NEW)
+ * ------------------------------ */
+function sortItems(
+  items: GmailNewsItem[],
+  sortBy: "hybrid" | "score" | "recent",
+  recencyWeight: number
+) {
+  const now = Date.now();
+
+  // recencyScore: 0~1 (최근일수록 1)
+  const recencyScore = (ts?: number) => {
+    const t = ts && ts > 0 ? ts : 0;
+    if (!t) return 0;
+    // 14일을 기준으로 최근성 점수 계산(그 이상은 급감)
+    const days = Math.max(0, (now - t) / (1000 * 60 * 60 * 24));
+    const score = 1 / (1 + days / 2.5); // 0~1
+    return clamp(score, 0, 1);
+  };
+
+  const maxScore = Math.max(...items.map((i) => i.score || 0), 1);
+
+  const hybridValue = (it: GmailNewsItem) => {
+    const sNorm = (it.score || 0) / maxScore; // 0~1
+    const r = recencyScore(it._ts);
+    const w = clamp(recencyWeight, 0, 1);
+    return w * r + (1 - w) * sNorm;
+  };
+
+  const list = [...items];
+
+  if (sortBy === "recent") {
+    return list.sort((a, b) => (b._ts || 0) - (a._ts || 0));
+  }
+  if (sortBy === "score") {
+    return list.sort((a, b) => (b.score || 0) - (a.score || 0));
+  }
+  // hybrid
+  return list.sort((a, b) => hybridValue(b) - hybridValue(a));
+}
+
+function stripInternal(it: GmailNewsItem): GmailNewsItem {
+  const { _ts, ...rest } = it as any;
+  return rest as GmailNewsItem;
+}
+
+/** -----------------------------
+ *  PublishedAt inference (NEW)
+ * ------------------------------ */
+function toTimestamp(iso?: string) {
+  if (!iso) return 0;
+  const d = new Date(iso);
+  const t = d.getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function toIsoSafe(dateStr: string) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  const t = d.getTime();
+  if (!Number.isNaN(t)) return d.toISOString();
+  return "";
+}
+
+/**
+ * snippet/decodedText에서 날짜 추정
+ * - ISO/RFC 형태는 Date()로 파싱
+ * - "2026. 2. 27", "2026-02-27" 패턴도 지원
+ * 없으면 messageDateIso 사용
+ */
+function inferPublishedAt(snippet: string, decodedText: string, messageDateIso: string) {
+  // 1) 표준 파싱 가능한 문자열 먼저
+  const direct = toIsoSafe(extractFirstDateLike(snippet) || extractFirstDateLike(decodedText));
+  if (direct) return direct;
+
+  // 2) yyyy.mm.dd / yyyy-mm-dd
+  const ymd = extractYmd(snippet) || extractYmd(decodedText);
+  if (ymd) return ymd;
+
+  // fallback: Gmail Date
+  return messageDateIso || new Date().toISOString();
+}
+
+function extractFirstDateLike(text: string) {
+  const t = (text || "").slice(0, 800);
+  // RFC style / English month style / etc - 너무 넓게 잡지 않도록 제한
+  const re =
+    /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{4}[^<\n]*\b/i;
+  const m = t.match(re);
+  return m?.[0] || "";
+}
+
+function extractYmd(text: string) {
+  const t = (text || "").slice(0, 800);
+
+  // 2026-02-27
+  const m1 = t.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
+  if (m1) {
+    const y = Number(m1[1]);
+    const mo = Number(m1[2]);
+    const d = Number(m1[3]);
+    const iso = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0)).toISOString();
+    return iso;
+  }
+
+  // 2026. 2. 27 / 2026.2.27
+  const m2 = t.match(/\b(20\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\b/);
+  if (m2) {
+    const y = Number(m2[1]);
+    const mo = Number(m2[2]);
+    const d = Number(m2[3]);
+    const iso = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0)).toISOString();
+    return iso;
+  }
+
+  return "";
 }
 
 /** -----------------------------
