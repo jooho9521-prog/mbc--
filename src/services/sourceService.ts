@@ -191,7 +191,7 @@ function normalizeDateForDisplay(input?: string): { date?: string; ts?: number }
 /** -----------------------------
  *  Dedup
  * ------------------------------ */
-const uniqByUrl = (items: NewsSourceItem[]) => {
+const uniqByUrl = <T extends NewsSourceItem>(items: T[]): T[] => {
   const seen = new Set<string>();
   return items.filter((it) => {
     const key = normalizeNewsUrl((it.url || "").trim());
