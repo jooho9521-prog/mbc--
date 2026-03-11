@@ -309,15 +309,57 @@ const getNewsHost = (item: Partial<NewsItem>) => {
   }
 };
 
-const getNewsRelevanceScore = (item: Partial<NewsItem>) => {
+const getKeywordTokens = (keyword: string) => {
+  return String(keyword || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((v) => v.trim())
+    .filter((v) => v.length >= 2);
+};
+
+const getNewsRelevanceScore = (item: Partial<NewsItem>, keyword: string, analysis?: any) => {
   const host = getNewsHost(item);
-  const title = String(item?.title || "").trim();
-  const snippet = String(item?.snippet || "").trim();
-  const preferredBoost = PREFERRED_SOURCE_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`)) ? 40 : 0;
-  const titleScore = Math.min(title.length, 90);
-  const snippetScore = Math.min(snippet.length, 120) * 0.25;
-  const dateScore = parseDateToTs(item?.date) ? 12 : 0;
-  return preferredBoost + titleScore + snippetScore + dateScore;
+  const title = String(item?.title || "").trim().toLowerCase();
+  const snippet = String(item?.snippet || "").trim().toLowerCase();
+  const uri = String(item?.uri || "").trim();
+
+  const keywordTokens = getKeywordTokens(keyword);
+
+  const preferredBoost = PREFERRED_SOURCE_DOMAINS.some(
+    (d) => host === d || host.endsWith(`.${d}`)
+  )
+    ? 35
+    : 0;
+
+  const titleLengthScore = Math.min(title.length, 90) * 0.45;
+  const snippetLengthScore = Math.min(snippet.length, 140) * 0.15;
+  const dateScore = parseDateToTs(item?.date) ? 10 : 0;
+
+  let keywordScore = 0;
+  for (const token of keywordTokens) {
+    if (title.includes(token)) keywordScore += 18;
+    if (snippet.includes(token)) keywordScore += 8;
+  }
+
+  const citations = Array.isArray(analysis?.citations) ? analysis.citations : [];
+  const citationMatchCount = citations.filter((c: any) => {
+    const cu = normalizeUrl(String(c?.url || ""));
+    const iu = normalizeUrl(uri);
+    if (!cu || !iu) return false;
+    if (cu === iu) return true;
+    return safeHost(cu) && safeHost(iu) && safeHost(cu) === safeHost(iu);
+  }).length;
+
+  const citationBoost = citationMatchCount * 22;
+
+  return (
+    preferredBoost +
+    titleLengthScore +
+    snippetLengthScore +
+    dateScore +
+    keywordScore +
+    citationBoost
+  );
 };
 
 const sanitizeNewsItems = (items: NewsItem[], allowBlocked = false): NewsItem[] => {
@@ -1230,34 +1272,45 @@ ${currentContent}
     );
   }, [getSwotContent, isDarkMode]);
 
-  const getSortedNews = useCallback(() => {
-    const items = [...newsSources];
+  const sortedNewsSources = useMemo(() => {
+  const items = [...newsSources].map((item, index) => ({
+    ...item,
+    __originalIndex: index,
+  }));
 
-    if (newsSort === "latest") {
-      return items.sort((a: any, b: any) => {
-        const at = parseDateToTs(a?.date);
-        const bt = parseDateToTs(b?.date);
-        const ar = getNewsRelevanceScore(a);
-        const br = getNewsRelevanceScore(b);
-
-        if (bt !== at) {
-          if (!bt && !at) return br - ar;
-          if (!bt) return -1;
-          if (!at) return 1;
-          return bt - at;
-        }
-
-        return br - ar;
-      });
-    }
-
+  if (newsSort === "latest") {
     return items.sort((a: any, b: any) => {
-      const ar = getNewsRelevanceScore(a);
-      const br = getNewsRelevanceScore(b);
+      const at = parseDateToTs(a?.date);
+      const bt = parseDateToTs(b?.date);
+
+      if (bt !== at) {
+        if (!bt && !at) return a.__originalIndex - b.__originalIndex;
+        if (!bt) return -1;
+        if (!at) return 1;
+        return bt - at;
+      }
+
+      const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
+      const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
       if (br !== ar) return br - ar;
-      return parseDateToTs(b?.date) - parseDateToTs(a?.date);
+
+      return a.__originalIndex - b.__originalIndex;
     });
-  }, [newsSort, newsSources]);
+  }
+
+  return items.sort((a: any, b: any) => {
+    const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
+    const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
+
+    if (br !== ar) return br - ar;
+
+    const at = parseDateToTs(a?.date);
+    const bt = parseDateToTs(b?.date);
+    if (bt !== at) return bt - at;
+
+    return a.__originalIndex - b.__originalIndex;
+  });
+}, [newsSources, newsSort, state.keyword, state.analysis]);
 
   const handleCopyEvidence = useCallback(async () => {
     if (!state.analysis) return;
@@ -1830,7 +1883,7 @@ ${currentContent}
 
                 <div className="space-y-5 max-h-[700px] overflow-y-auto pr-2">
                   {newsSources.length > 0 ? (
-                    getSortedNews().map((item, idx) => (
+                    sortedNewsSources.map((item, idx) => (
                       <div key={(item as any)?.uri || (item as any)?.url || idx} ref={setSourceRef((item as any)?.uri || (item as any)?.url || "")}>
                         <NewsCard
                           item={item}
