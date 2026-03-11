@@ -44,7 +44,7 @@ import {
   isBlockedByKeyword,
   isBlockedDomain,
   normalizeNewsUrl,
-} from "./services/sourceService"; 
+} from "./services/sourceService"; // ✅ A 근거모드(Serper)
 import type { AppState, NewsItem } from "./types";
 
 import { NewsCard } from "./components/NewsCard";
@@ -161,14 +161,26 @@ const renderText = (text: string) => {
   return clean;
 };
 
+/**
+ * ⭐️ 시간 정밀 파싱 로직 추가! 
+ * 시/분 까지 완벽하게 잡아내서 최신순 정렬에 빈틈이 없도록 수정했습니다.
+ */
 const parseDateToTs = (dateStr?: string): number => {
   if (!dateStr) return 0;
   const raw = String(dateStr).trim();
   if (!raw) return 0;
 
+  // 1) Date로 바로 파싱되는 케이스
   const d = new Date(raw);
   if (!Number.isNaN(d.getTime())) return d.getTime();
 
+  // 2) YYYY-MM-DD HH:mm (시, 분까지 정확하게 파싱)
+  const mTime = raw.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})/);
+  if (mTime) {
+     return new Date(Number(mTime[1]), Number(mTime[2])-1, Number(mTime[3]), Number(mTime[4]), Number(mTime[5])).getTime();
+  }
+
+  // 3) YYYY-MM-DD
   const m1 = raw.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
   if (m1) {
     const y = Number(m1[1]);
@@ -177,6 +189,7 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
+  // 4) YYYY/MM/DD
   const m1b = raw.match(/\b(20\d{2})\/(\d{1,2})\/(\d{1,2})\b/);
   if (m1b) {
     const y = Number(m1b[1]);
@@ -185,6 +198,7 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
+  // 5) YYYY. M. D
   const m2 = raw.match(/\b(20\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\b/);
   if (m2) {
     const y = Number(m2[1]);
@@ -193,6 +207,7 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
+  // 6) relative (EN) "2 hours ago"
   const rel = raw.match(/(\d+)\s*(minute|hour|day|week|month|year)s?\s*ago/i);
   if (rel) {
     const v = parseInt(rel[1], 10);
@@ -267,6 +282,7 @@ const normalizeEvidenceArray = (
   return Array.from(map.values()).slice(0, max);
 };
 
+// ⭐️ 관련도순 정렬을 더욱 다이나믹하게 만들기 위해 연합뉴스 추가
 const PREFERRED_SOURCE_DOMAINS = [
   "hani.co.kr",
   "donga.com",
@@ -275,6 +291,7 @@ const PREFERRED_SOURCE_DOMAINS = [
   "reuters.com",
   "bloomberg.com",
   "yonhapnews.co.kr",
+  "yna.co.kr", 
   "joongang.co.kr",
   "chosun.com",
   "khan.co.kr",
@@ -393,6 +410,7 @@ const normalizeUrl = (u: string) => {
   }
 };
 
+
 const App: React.FC = () => {
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -416,6 +434,7 @@ const App: React.FC = () => {
   const [tempSerperKey, setTempSerperKey] = useState("");
 
   const [selectedMode, setSelectedMode] = useState<(typeof ANALYSIS_MODES)[number]>(ANALYSIS_MODES[0]);
+
   const [selectedPersona, setSelectedPersona] = useState<(typeof PERSONAS)[number]>(PERSONAS[0]);
 
   const [newsSources, setNewsSources] = useState<NewsItem[]>([]);
@@ -678,15 +697,15 @@ const App: React.FC = () => {
           }
 
           const evidenceArray = normalizeEvidenceArray(
-            (sources || []).map((s: any) => ({
-              title: s?.title,
-              url: s?.url,
-              source: s?.source,
-              snippet: s?.snippet,
-              date: s?.date,
-            })),
-            12
-          );
+          (sources || []).map((s: any) => ({
+            title: s?.title,
+            url: s?.url,
+            source: s?.source,
+            snippet: s?.snippet,
+            date: s?.date,
+          })),
+          12
+        );
 
           if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
@@ -824,16 +843,16 @@ ${combinedEmailText}
 `.trim();
 
       const evidenceArray = normalizeEvidenceArray(
-        (emailData || []).slice(0, 12).map((e: any) => ({
-          title: e.title || "G메일 기사",
-          url: e.link || e.url || "https://mail.google.com/",
-          source: e.source || "Gmail",
-          snippet: String(e.body || "").slice(0, 280),
-          date: e.publishedAt || e.date || "",
-        })),
-        12,
-        { allowBlocked: true }
-      );
+      (emailData || []).slice(0, 12).map((e: any) => ({
+        title: e.title || "G메일 기사",
+        url: e.link || e.url || "https://mail.google.com/",
+        source: e.source || "Gmail",
+        snippet: String(e.body || "").slice(0, 280),
+        date: e.publishedAt || e.date || "",
+      })),
+      12,
+      { allowBlocked: true }
+    );
 
       const { analysis } = await service.fetchTrendsAndAnalysisA(
         "G메일 뉴스 요약",
@@ -898,7 +917,12 @@ ${combinedEmailText}
   }, [state.analysis, state.keyword, selectedMode.name]);
 
   const handleTranslate = useCallback(
-    async (targetLang: { code: string; label: string; name: string; prompt: string; }) => {
+    async (targetLang: {
+      code: string;
+      label: string;
+      name: string;
+      prompt: string;
+    }) => {
       if (!state.analysis || isTranslating) return;
       setIsTranslating(true);
       showToast(`${targetLang.label} ${targetLang.name} 버전으로 분석 중...`);
@@ -1184,40 +1208,38 @@ ${currentContent}
     );
   }, [getSwotContent, isDarkMode]);
 
-  // ⭐️ [버그 해결!] 정렬(최신순/관련도순) 기능 완벽 고침
+  // ⭐️ [완벽 해결] 2개의 버튼 로직을 완전히 분리했습니다! 
   const sortedNewsSources = useMemo(() => {
     const items = [...newsSources].map((item, index) => ({
       ...item,
       __originalIndex: index,
     }));
 
+    // 🕒 [최신순] 로직: 무조건 날짜(시/분 포함)로만 줄을 세웁니다. 관련도는 무시합니다.
     if (newsSort === "latest") {
       return items.sort((a: any, b: any) => {
         const at = parseDateToTs(a?.date);
         const bt = parseDateToTs(b?.date);
 
-        // 1. 날짜가 다르면 무조건 날짜(최신) 우선 정렬
         if (bt !== at) {
           if (!bt && !at) return a.__originalIndex - b.__originalIndex;
           if (!bt) return -1;
           if (!at) return 1;
-          return bt - at;
+          return bt - at; // 숫자가 클수록(최신) 위로 올라옴
         }
-
-        // 2. ⭐️ [버그 수정됨] 날짜가 완벽히 동일할 때 (같은 G메일에서 온 기사들)
-        // 기존에는 여기서 관련도 점수를 비교했기 때문에, 최신순 버튼과 관련도 버튼이 똑같이 작동했습니다.
-        // 이제는 원본 메일에 있던 기사 순서(원래 인덱스)를 유지하게 하여 명확한 차이를 줍니다.
+        
         return a.__originalIndex - b.__originalIndex;
       });
     }
 
-    // 관련도순 정렬
+    // ↑↓ [관련도순] 로직: 점수가 다르면 무조건 점수순, 점수가 같을 때만 최신순으로 섭니다.
     return items.sort((a: any, b: any) => {
       const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
       const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
 
       if (br !== ar) return br - ar;
 
+      // 점수가 동점일 때만 시간순 보조 정렬
       const at = parseDateToTs(a?.date);
       const bt = parseDateToTs(b?.date);
       if (bt !== at) return bt - at;
