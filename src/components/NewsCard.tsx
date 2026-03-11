@@ -15,13 +15,9 @@ type Props = {
   analysis?: TrendAnalysis | null;
   onShowToast?: (msg: string) => void;
   isDarkMode?: boolean;
-  /** ✅ C단계: 선택된 포인트(1~5). 해당 포인트 근거 카드 자동 강조/펼침 */
   activePoint?: number | null;
-  /** ✅ 소스피드 표시용: 근거 N 라벨 */
   ordinal?: number;
 };
-
-/** ---------------- Utils ---------------- */
 
 const safeHostname = (url: string) => {
   try {
@@ -29,6 +25,50 @@ const safeHostname = (url: string) => {
   } catch {
     return "";
   }
+};
+
+const formatDisplayDate = (input?: string) => {
+  if (!input) return "";
+
+  const raw = String(input).trim();
+  if (!raw) return "";
+
+  const pad = (num: number) => String(num).padStart(2, "0");
+  const toKstText = (date: Date) => {
+    const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    return `${kst.getUTCFullYear()}-${pad(kst.getUTCMonth() + 1)}-${pad(
+      kst.getUTCDate()
+    )} ${pad(kst.getUTCHours())}:${pad(kst.getUTCMinutes())}`;
+  };
+
+  const normalized = raw.replace(/\s+/g, " ");
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return `${normalized} 00:00`;
+  }
+
+  if (/^\d{4}[./]\s*\d{1,2}[./]\s*\d{1,2}$/.test(normalized)) {
+    const parts = normalized.split(/[./]/).map((v) => v.trim());
+    const [y, m, d] = parts;
+    return `${y}-${pad(Number(m))}-${pad(Number(d))} 00:00`;
+  }
+
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime())) {
+    return toKstText(parsed);
+  }
+
+  const m = normalized.match(
+    /(\d{4})[./-]\s*(\d{1,2})[./-]\s*(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/
+  );
+  if (m) {
+    const [, y, mo, d, hh = "0", mm = "0"] = m;
+    return `${y}-${pad(Number(mo))}-${pad(Number(d))} ${pad(Number(hh))}:${pad(
+      Number(mm)
+    )}`;
+  }
+
+  return raw;
 };
 
 const getFaviconUrl = (url: string) => {
@@ -67,7 +107,9 @@ const matchCitationsForUrl = (citations: Citation[] | undefined, uri: string) =>
   const exact = citations.filter((c) => normalizeUrl(String(c?.url || "")) === target);
   if (exact.length) return exact;
 
-  const hostMatches = citations.filter((c) => safeHostname(String(c?.url || "")) === targetHost);
+  const hostMatches = citations.filter(
+    (c) => safeHostname(String(c?.url || "")) === targetHost
+  );
   if (hostMatches.length) return hostMatches;
 
   const loose = citations.filter((c) => {
@@ -103,15 +145,6 @@ const highlightKeyword = (text: string, keyword?: string) => {
   }
 };
 
-
-const hashToPointNotation = (point: number) => {
-  const p = Number(point);
-  if (!Number.isFinite(p) || p <= 0) return "검증";
-  return `검증 · 포인트 ${Math.min(5, Math.max(1, Math.round(p)))}`;
-};
-
-/** ---------------- Component ---------------- */
-
 export const NewsCard: React.FC<Props> = ({
   item,
   analysis,
@@ -119,16 +152,12 @@ export const NewsCard: React.FC<Props> = ({
   isDarkMode,
   keyword,
   activePoint,
-  ordinal,
 }) => {
   const [expanded, setExpanded] = useState(false);
 
   const uri = useMemo(() => getItemUrl(item), [item]);
 
-  const dateText = useMemo(() => {
-    if (!item?.date) return "";
-    return String(item.date);
-  }, [item?.date]);
+  const dateText = useMemo(() => formatDisplayDate(item?.date), [item?.date]);
 
   const sourceText = useMemo(() => {
     return (item?.source || safeHostname(uri) || "Web").toString();
@@ -146,14 +175,12 @@ export const NewsCard: React.FC<Props> = ({
   const evidenceInline = useMemo(() => citationsForThisCard.slice(0, 2), [citationsForThisCard]);
   const evidenceMore = useMemo(() => citationsForThisCard.slice(2, 5), [citationsForThisCard]);
 
-  // ✅ C단계: 선택된 포인트가 이 카드의 근거와 매칭되면 자동으로 더보기 펼침
   React.useEffect(() => {
     if (!activePoint) return;
     if (!citationsForThisCard?.length) return;
     const hit = citationsForThisCard.some((c) => Number(c?.point) === Number(activePoint));
     if (hit) setExpanded(true);
   }, [activePoint, citationsForThisCard]);
-
 
   const copyLink = async () => {
     if (!uri) return;
@@ -165,7 +192,6 @@ export const NewsCard: React.FC<Props> = ({
     }
   };
 
-  /** ---------------- Styles ---------------- */
   const cardBase =
     `rounded-2xl border shadow-sm hover:shadow-md transition-all p-5 ` +
     (isDarkMode
@@ -232,8 +258,11 @@ export const NewsCard: React.FC<Props> = ({
                 className={
                   "ml-auto inline-flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-full border " +
                   evidenceChip +
-                  (activePoint && citationsForThisCard.some((c) => Number(c?.point) === Number(activePoint))
-                    ? (isDarkMode ? " ring-2 ring-emerald-500/40" : " ring-2 ring-emerald-300")
+                  (activePoint &&
+                  citationsForThisCard.some((c) => Number(c?.point) === Number(activePoint))
+                    ? isDarkMode
+                      ? " ring-2 ring-emerald-500/40"
+                      : " ring-2 ring-emerald-300"
                     : "")
                 }
                 title={`출처 링크 ${citationsForThisCard.length}개 매칭`}
@@ -252,7 +281,9 @@ export const NewsCard: React.FC<Props> = ({
           </h4>
 
           {item?.snippet ? (
-            <p className={`mt-2 text-[12px] leading-relaxed line-clamp-3 whitespace-pre-line ${snippetText}`}>
+            <p
+              className={`mt-2 text-[12px] leading-relaxed line-clamp-3 whitespace-pre-line ${snippetText}`}
+            >
               {highlightKeyword(String(item.snippet), keyword)}
             </p>
           ) : null}
@@ -262,7 +293,13 @@ export const NewsCard: React.FC<Props> = ({
           <button onClick={copyLink} className={`p-2 rounded-xl ${btnBg}`} title="링크 복사">
             <Copy size={16} />
           </button>
-          <a href={uri} target="_blank" rel="noreferrer" className={`p-2 rounded-xl ${btnBg}`} title="새 탭에서 열기">
+          <a
+            href={uri}
+            target="_blank"
+            rel="noreferrer"
+            className={`p-2 rounded-xl ${btnBg}`}
+            title="새 탭에서 열기"
+          >
             <ExternalLink size={16} />
           </a>
         </div>
@@ -299,7 +336,6 @@ export const NewsCard: React.FC<Props> = ({
             ) : null}
           </div>
 
-          {/* ✅ 옵션 A: “검증 · 포인트 n” + 툴팁 */}
           <div className="mt-2 space-y-2">
             {evidenceInline.map((c, idx) => {
               const curl = String(c?.url || "").trim();
@@ -312,7 +348,13 @@ export const NewsCard: React.FC<Props> = ({
                   href={curl}
                   target="_blank"
                   rel="noreferrer"
-                  className={`block text-[12px] font-bold hover:underline ${inlineLinkStyle} ${activePoint && point && Number(activePoint)===Number(point) ? (isDarkMode ? 'bg-emerald-900/20 ring-1 ring-emerald-700 rounded-lg px-2 py-1' : 'bg-emerald-50 ring-1 ring-emerald-200 rounded-lg px-2 py-1') : ''}`}
+                  className={`block text-[12px] font-bold hover:underline ${inlineLinkStyle} ${
+                    activePoint && point && Number(activePoint) === Number(point)
+                      ? isDarkMode
+                        ? "bg-emerald-900/20 ring-1 ring-emerald-700 rounded-lg px-2 py-1"
+                        : "bg-emerald-50 ring-1 ring-emerald-200 rounded-lg px-2 py-1"
+                      : ""
+                  }`}
                   title={point ? `요약의 ${point}번 주장/포인트를 뒷받침하는 출처` : curl}
                 >
                   • {point ? `검증 · 포인트 ${point} — ` : ""}
@@ -335,7 +377,13 @@ export const NewsCard: React.FC<Props> = ({
                     href={curl}
                     target="_blank"
                     rel="noreferrer"
-                    className={`block text-[12px] font-bold hover:underline ${inlineLinkStyle} ${activePoint && point && Number(activePoint)===Number(point) ? (isDarkMode ? 'bg-emerald-900/20 ring-1 ring-emerald-700 rounded-lg px-2 py-1' : 'bg-emerald-50 ring-1 ring-emerald-200 rounded-lg px-2 py-1') : ''}`}
+                    className={`block text-[12px] font-bold hover:underline ${inlineLinkStyle} ${
+                      activePoint && point && Number(activePoint) === Number(point)
+                        ? isDarkMode
+                          ? "bg-emerald-900/20 ring-1 ring-emerald-700 rounded-lg px-2 py-1"
+                          : "bg-emerald-50 ring-1 ring-emerald-200 rounded-lg px-2 py-1"
+                        : ""
+                    }`}
                     title={point ? `요약의 ${point}번 주장/포인트를 뒷받침하는 출처` : curl}
                   >
                     • {point ? `검증 · 포인트 ${point} — ` : ""}
