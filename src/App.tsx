@@ -44,7 +44,7 @@ import {
   isBlockedByKeyword,
   isBlockedDomain,
   normalizeNewsUrl,
-} from "./services/sourceService"; // ✅ A 근거모드(Serper)
+} from "./services/sourceService";
 import type { AppState, NewsItem } from "./types";
 
 import { NewsCard } from "./components/NewsCard";
@@ -161,26 +161,19 @@ const renderText = (text: string) => {
   return clean;
 };
 
-/**
- * ⭐️ 시간 정밀 파싱 로직 추가! 
- * 시/분 까지 완벽하게 잡아내서 최신순 정렬에 빈틈이 없도록 수정했습니다.
- */
 const parseDateToTs = (dateStr?: string): number => {
   if (!dateStr) return 0;
   const raw = String(dateStr).trim();
   if (!raw) return 0;
 
-  // 1) Date로 바로 파싱되는 케이스
   const d = new Date(raw);
   if (!Number.isNaN(d.getTime())) return d.getTime();
 
-  // 2) YYYY-MM-DD HH:mm (시, 분까지 정확하게 파싱)
   const mTime = raw.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})/);
   if (mTime) {
      return new Date(Number(mTime[1]), Number(mTime[2])-1, Number(mTime[3]), Number(mTime[4]), Number(mTime[5])).getTime();
   }
 
-  // 3) YYYY-MM-DD
   const m1 = raw.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
   if (m1) {
     const y = Number(m1[1]);
@@ -189,7 +182,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 4) YYYY/MM/DD
   const m1b = raw.match(/\b(20\d{2})\/(\d{1,2})\/(\d{1,2})\b/);
   if (m1b) {
     const y = Number(m1b[1]);
@@ -198,7 +190,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 5) YYYY. M. D
   const m2 = raw.match(/\b(20\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\b/);
   if (m2) {
     const y = Number(m2[1]);
@@ -207,7 +198,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 6) relative (EN) "2 hours ago"
   const rel = raw.match(/(\d+)\s*(minute|hour|day|week|month|year)s?\s*ago/i);
   if (rel) {
     const v = parseInt(rel[1], 10);
@@ -282,7 +272,6 @@ const normalizeEvidenceArray = (
   return Array.from(map.values()).slice(0, max);
 };
 
-// ⭐️ 관련도순 정렬을 더욱 다이나믹하게 만들기 위해 연합뉴스 추가
 const PREFERRED_SOURCE_DOMAINS = [
   "hani.co.kr",
   "donga.com",
@@ -410,7 +399,6 @@ const normalizeUrl = (u: string) => {
   }
 };
 
-
 const App: React.FC = () => {
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
@@ -434,8 +422,10 @@ const App: React.FC = () => {
   const [tempSerperKey, setTempSerperKey] = useState("");
 
   const [selectedMode, setSelectedMode] = useState<(typeof ANALYSIS_MODES)[number]>(ANALYSIS_MODES[0]);
-
   const [selectedPersona, setSelectedPersona] = useState<(typeof PERSONAS)[number]>(PERSONAS[0]);
+
+  // ⭐️ 검색할 특정 날짜를 보관할 상태 변수
+  const [targetDate, setTargetDate] = useState("");
 
   const [newsSources, setNewsSources] = useState<NewsItem[]>([]);
   const [newsSort, setNewsSort] = useState<"relevance" | "latest">("relevance");
@@ -697,15 +687,15 @@ const App: React.FC = () => {
           }
 
           const evidenceArray = normalizeEvidenceArray(
-          (sources || []).map((s: any) => ({
-            title: s?.title,
-            url: s?.url,
-            source: s?.source,
-            snippet: s?.snippet,
-            date: s?.date,
-          })),
-          12
-        );
+            (sources || []).map((s: any) => ({
+              title: s?.title,
+              url: s?.url,
+              source: s?.source,
+              snippet: s?.snippet,
+              date: s?.date,
+            })),
+            12
+          );
 
           if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
@@ -817,7 +807,17 @@ const App: React.FC = () => {
 
     try {
       showToast("G메일에서 뉴스를 가져오는 중...");
-      const emailData = (await getNewsEmails()) as any[];
+      
+      // ⭐️ 선택한 날짜가 있으면 'YYYY/MM/DD' 포맷으로 변경하여 API에 전달합니다.
+      const formattedDate = targetDate ? targetDate.replace(/-/g, '/') : undefined;
+      const emailData = (await getNewsEmails({ targetDate: formattedDate })) as any[];
+
+      // ⭐️ 해당 날짜에 메일이 없는 경우 안내 띄우기
+      if (!emailData || emailData.length === 0) {
+        showToast(targetDate ? `${targetDate}에 수신된 뉴스 메일이 없습니다.` : "수신된 뉴스 메일이 없습니다.");
+        setState(prev => ({ ...prev, isLoading: false }));
+        return;
+      }
 
       showToast("가져온 뉴스를 분석하는 중...");
       const service = new GeminiTrendService();
@@ -843,16 +843,16 @@ ${combinedEmailText}
 `.trim();
 
       const evidenceArray = normalizeEvidenceArray(
-      (emailData || []).slice(0, 12).map((e: any) => ({
-        title: e.title || "G메일 기사",
-        url: e.link || e.url || "https://mail.google.com/",
-        source: e.source || "Gmail",
-        snippet: String(e.body || "").slice(0, 280),
-        date: e.publishedAt || e.date || "",
-      })),
-      12,
-      { allowBlocked: true }
-    );
+        (emailData || []).slice(0, 12).map((e: any) => ({
+          title: e.title || "G메일 기사",
+          url: e.link || e.url || "https://mail.google.com/",
+          source: e.source || "Gmail",
+          snippet: String(e.body || "").slice(0, 280),
+          date: e.publishedAt || e.date || "",
+        })),
+        12,
+        { allowBlocked: true }
+      );
 
       const { analysis } = await service.fetchTrendsAndAnalysisA(
         "G메일 뉴스 요약",
@@ -891,7 +891,7 @@ ${combinedEmailText}
       }));
       showToast("G메일 요약 실패: " + (err?.message || "오류"));
     }
-  }, [getGeminiRuntimeKey, isGoogleAuthReady, selectedPersona.prompt, showToast]);
+  }, [getGeminiRuntimeKey, isGoogleAuthReady, selectedPersona.prompt, showToast, targetDate]);
 
   const handleModeChange = useCallback(
     (mode: (typeof ANALYSIS_MODES)[number]) => {
@@ -917,12 +917,7 @@ ${combinedEmailText}
   }, [state.analysis, state.keyword, selectedMode.name]);
 
   const handleTranslate = useCallback(
-    async (targetLang: {
-      code: string;
-      label: string;
-      name: string;
-      prompt: string;
-    }) => {
+    async (targetLang: { code: string; label: string; name: string; prompt: string; }) => {
       if (!state.analysis || isTranslating) return;
       setIsTranslating(true);
       showToast(`${targetLang.label} ${targetLang.name} 버전으로 분석 중...`);
@@ -1208,14 +1203,12 @@ ${currentContent}
     );
   }, [getSwotContent, isDarkMode]);
 
-  // ⭐️ [완벽 해결] 2개의 버튼 로직을 완전히 분리했습니다! 
   const sortedNewsSources = useMemo(() => {
     const items = [...newsSources].map((item, index) => ({
       ...item,
       __originalIndex: index,
     }));
 
-    // 🕒 [최신순] 로직: 무조건 날짜(시/분 포함)로만 줄을 세웁니다. 관련도는 무시합니다.
     if (newsSort === "latest") {
       return items.sort((a: any, b: any) => {
         const at = parseDateToTs(a?.date);
@@ -1225,21 +1218,19 @@ ${currentContent}
           if (!bt && !at) return a.__originalIndex - b.__originalIndex;
           if (!bt) return -1;
           if (!at) return 1;
-          return bt - at; // 숫자가 클수록(최신) 위로 올라옴
+          return bt - at; 
         }
         
         return a.__originalIndex - b.__originalIndex;
       });
     }
 
-    // ↑↓ [관련도순] 로직: 점수가 다르면 무조건 점수순, 점수가 같을 때만 최신순으로 섭니다.
     return items.sort((a: any, b: any) => {
       const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
       const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
 
       if (br !== ar) return br - ar;
 
-      // 점수가 동점일 때만 시간순 보조 정렬
       const at = parseDateToTs(a?.date);
       const bt = parseDateToTs(b?.date);
       if (bt !== at) return bt - at;
@@ -1521,23 +1512,38 @@ ${currentContent}
                 근거모드 {useEvidenceMode ? "ON" : "OFF"}
               </button>
 
-              <button
-                onClick={() => void handleGmailSummary()}
-                disabled={state.isLoading}
-                className={`ml-auto px-5 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm flex items-center gap-2 ${
-                  isDarkMode
-                    ? "bg-red-900/30 border-red-800 text-red-300 hover:bg-red-900/50"
-                    : "bg-red-50 border-red-200 text-red-600 hover:bg-red-100 hover:border-red-300"
-                }`}
-                title="G메일의 '뉴스요약' 라벨에 있는 메일들을 분석합니다"
-              >
-                {state.isLoading && state.keyword === "G메일 '뉴스요약' 브리핑" ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Mail size={14} />
-                )}
-                G메일 뉴스 요약
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                {/* ⭐️ 날짜 선택 달력 추가 */}
+                <input 
+                  type="date" 
+                  value={targetDate}
+                  onChange={(e) => setTargetDate(e.target.value)}
+                  className={`px-4 py-1.5 text-[12px] font-bold rounded-full transition-all border shadow-sm outline-none cursor-pointer ${
+                    isDarkMode
+                      ? "bg-gray-900 border-gray-800 text-gray-300"
+                      : "bg-white border-gray-200 text-gray-700"
+                  }`}
+                  title="가져올 뉴스 날짜를 선택하세요 (비우면 최근순서)"
+                />
+
+                <button
+                  onClick={() => void handleGmailSummary()}
+                  disabled={state.isLoading}
+                  className={`px-5 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm flex items-center gap-2 ${
+                    isDarkMode
+                      ? "bg-red-900/30 border-red-800 text-red-300 hover:bg-red-900/50"
+                      : "bg-red-50 border-red-200 text-red-600 hover:bg-red-100 hover:border-red-300"
+                  }`}
+                  title="선택한 날짜의 G메일 '뉴스요약'을 분석합니다"
+                >
+                  {state.isLoading && state.keyword === "G메일 '뉴스요약' 브리핑" ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Mail size={14} />
+                  )}
+                  G메일 뉴스 요약
+                </button>
+              </div>
             </div>
           </div>
         </header>

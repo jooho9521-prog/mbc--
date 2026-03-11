@@ -59,7 +59,7 @@ const normalizeSmartQuotes = (s: string) =>
     .replace(/[“”]/g, '"')
     .replace(/[„]/g, '"')
     .replace(/[’‘]/g, "'")
-    .replace(/[‐‑‒–—―]/g, "-");
+    .replace(/[‐-‒–—―]/g, "-");
 
 /**
  * ✅ JSON/JS 객체 형태 응답에서 { ... } 또는 [ ... ] 영역만 괄호 밸런싱으로 추출
@@ -363,7 +363,6 @@ export function normalizeEvidence(evidence: EvidenceItem[], max = 12): EvidenceI
   return out;
 }
 
-
 export const extractErrorMessage = (error: any): string => {
   if (!error) return "Unknown error";
   if (typeof error === "string") return error;
@@ -526,7 +525,6 @@ const normalizeTrendAnalysis = (raw: any): TrendAnalysis | null => {
     reason: String(f?.reason || ""),
   }));
 
-
   // ✅ keyPoints가 너무 적으면 summary(1~5.) 기반으로 최소 3개 보강 (기존 UI 카드 유지)
   if (a.keyPoints.length < 3 && typeof a.summary === "string" && a.summary.trim().length > 0) {
     const pts = extractNumberedSummaryPoints(a.summary);
@@ -561,7 +559,6 @@ const normalizeTrendAnalysis = (raw: any): TrendAnalysis | null => {
   }
 
   return a as TrendAnalysis;
-
 };
 
 /** ✅ citations/factChecks가 비어있을 때 news/evidence 기반으로 자동 생성 */
@@ -644,7 +641,10 @@ const hydrateTrustFields = (
   }
 
   // 3) confidenceScore 산출 (UI 검증점수)
-  const fcs = (a.factChecks || []).slice().sort((x: any, y: any) => Number(x?.point || 0) - Number(y?.point || 0)).slice(0, 5);
+  const fcs = (a.factChecks || [])
+    .slice()
+    .sort((x: any, y: any) => Number(x?.point || 0) - Number(y?.point || 0))
+    .slice(0, 5);
   if (fcs.length) {
     const avg = fcs.reduce((acc: number, x: any) => acc + Number(x?.confidence || 0), 0) / fcs.length;
     a.confidenceScore = Math.max(0, Math.min(100, Math.round(avg)));
@@ -760,7 +760,11 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 
         // ✅ trust fields 자동 보강 (citations/factChecks/confidenceScore)
         normalized = hydrateTrustFields(normalized, {
-          links: (news || []).map((n: any) => ({ title: n?.title, url: n?.uri, publisher: n?.source })),
+          links: (news || []).map((n: any) => ({
+            title: n?.title,
+            url: n?.uri,
+            publisher: n?.source,
+          })),
         });
 
         return { news, analysis: normalized };
@@ -893,9 +897,13 @@ ${evidenceText}
 
         // ✅ trust fields 자동 보강 (evidence/news 기반)
         normalized = hydrateTrustFields(normalized, {
-          links: (news || []).map((n: any) => ({ title: n?.title, url: n?.uri, publisher: n?.source })),
+          links: (news || []).map((n: any) => ({
+            title: n?.title,
+            url: n?.uri,
+            publisher: n?.source,
+          })),
         });
-      
+
         return { news, analysis: normalized };
       });
     } catch (e) {
