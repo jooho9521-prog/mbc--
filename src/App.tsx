@@ -44,7 +44,7 @@ import {
   isBlockedByKeyword,
   isBlockedDomain,
   normalizeNewsUrl,
-} from "./services/sourceService"; // ✅ A 근거모드(Serper)
+} from "./services/sourceService"; 
 import type { AppState, NewsItem } from "./types";
 
 import { NewsCard } from "./components/NewsCard";
@@ -161,22 +161,14 @@ const renderText = (text: string) => {
   return clean;
 };
 
-/**
- * ✅ 날짜 파싱(최신순 정렬 품질 개선)
- * - ISO/RFC/`YYYY-MM-DD`/`YYYY. M. D`/`YYYY/MM/DD` 등 방어
- * - `2 hours ago` 같은 상대시간(영문)도 최소 방어
- * - 파싱 실패 시 0 (정렬에서 뒤로 밀림)
- */
 const parseDateToTs = (dateStr?: string): number => {
   if (!dateStr) return 0;
   const raw = String(dateStr).trim();
   if (!raw) return 0;
 
-  // 1) Date로 바로 파싱되는 케이스
   const d = new Date(raw);
   if (!Number.isNaN(d.getTime())) return d.getTime();
 
-  // 2) YYYY-MM-DD
   const m1 = raw.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
   if (m1) {
     const y = Number(m1[1]);
@@ -185,7 +177,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 3) YYYY/MM/DD
   const m1b = raw.match(/\b(20\d{2})\/(\d{1,2})\/(\d{1,2})\b/);
   if (m1b) {
     const y = Number(m1b[1]);
@@ -194,7 +185,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 4) YYYY. M. D
   const m2 = raw.match(/\b(20\d{2})\.\s*(\d{1,2})\.\s*(\d{1,2})\b/);
   if (m2) {
     const y = Number(m2[1]);
@@ -203,7 +193,6 @@ const parseDateToTs = (dateStr?: string): number => {
     return new Date(Date.UTC(y, mo - 1, da, 0, 0, 0)).getTime();
   }
 
-  // 5) relative (EN) "2 hours ago"
   const rel = raw.match(/(\d+)\s*(minute|hour|day|week|month|year)s?\s*ago/i);
   if (rel) {
     const v = parseInt(rel[1], 10);
@@ -227,10 +216,6 @@ const parseDateToTs = (dateStr?: string): number => {
   return 0;
 };
 
-/**
- * ✅ Evidence 정규화 + 중복 제거
- * - Serper/Gmail 모두 (url/title/source/snippet/date) 포맷이 들쑥날쑥해서 단일 함수로 통일
- */
 type EvidenceItem = {
   title: string;
   url: string;
@@ -342,17 +327,13 @@ const getNewsRelevanceScore = (item: Partial<NewsItem>, keyword: string, analysi
   }
 
   const citations = Array.isArray(analysis?.citations) ? analysis.citations : [];
-const citationMatchCount = citations.filter((c: any) => {
-  const cu = normalizeNewsUrl(String(c?.url || ""));
-  const iu = normalizeNewsUrl(uri);
-  if (!cu || !iu) return false;
-  if (cu === iu) return true;
-
-  const ch = getNewsHost({ uri: cu } as Partial<NewsItem>);
-  const ih = getNewsHost({ uri: iu } as Partial<NewsItem>);
-
-  return !!ch && !!ih && ch === ih;
-}).length;
+  const citationMatchCount = citations.filter((c: any) => {
+    const cu = normalizeUrl(String(c?.url || ""));
+    const iu = normalizeUrl(uri);
+    if (!cu || !iu) return false;
+    if (cu === iu) return true;
+    return safeHost(cu) && safeHost(iu) && safeHost(cu) === safeHost(iu);
+  }).length;
 
   const citationBoost = citationMatchCount * 22;
 
@@ -391,12 +372,31 @@ const sanitizeNewsItems = (items: NewsItem[], allowBlocked = false): NewsItem[] 
   return Array.from(dedup.values());
 };
 
+const safeHost = (u: string) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+};
+
+const normalizeUrl = (u: string) => {
+  try {
+    const url = new URL(u);
+    url.hash = "";
+    ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"].forEach((k) =>
+      url.searchParams.delete(k)
+    );
+    return url.toString();
+  } catch {
+    return (u || "").trim();
+  }
+};
 
 const App: React.FC = () => {
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
-  // ✅ C 단계: 포인트 ↔ 소스 피드 인터랙션
   const [activePoint, setActivePoint] = useState<number | null>(null);
   const sourceItemRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -409,50 +409,19 @@ const App: React.FC = () => {
     []
   );
 
-  const safeHost = (u: string) => {
-    try {
-      return new URL(u).hostname.replace(/^www\./, "");
-    } catch {
-      return "";
-    }
-  };
-
-  const normalizeUrl = (u: string) => {
-    try {
-      const url = new URL(u);
-      url.hash = "";
-      ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"].forEach((k) =>
-        url.searchParams.delete(k)
-      );
-      return url.toString();
-    } catch {
-      return (u || "").trim();
-    }
-  };
-
-
-  const [activeTab, setActiveTab] = useState<"dashboard" | "onepage" | "insights">(
-    "dashboard"
-  );
+  const [activeTab, setActiveTab] = useState<"dashboard" | "onepage" | "insights">("dashboard");
 
   const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
   const [tempApiKey, setTempApiKey] = useState("");
   const [tempSerperKey, setTempSerperKey] = useState("");
 
-  const [selectedMode, setSelectedMode] = useState<
-    (typeof ANALYSIS_MODES)[number]
-  >(ANALYSIS_MODES[0]);
-
-  const [selectedPersona, setSelectedPersona] = useState<
-    (typeof PERSONAS)[number]
-  >(PERSONAS[0]);
+  const [selectedMode, setSelectedMode] = useState<(typeof ANALYSIS_MODES)[number]>(ANALYSIS_MODES[0]);
+  const [selectedPersona, setSelectedPersona] = useState<(typeof PERSONAS)[number]>(PERSONAS[0]);
 
   const [newsSources, setNewsSources] = useState<NewsItem[]>([]);
   const [newsSort, setNewsSort] = useState<"relevance" | "latest">("relevance");
 
   const [isDarkMode, setIsDarkMode] = useState(false);
-
-  // ✅ A 근거모드 토글 (기본 ON)
   const [useEvidenceMode, setUseEvidenceMode] = useState(true);
 
   const [state, setState] = useState<AppState>({
@@ -481,7 +450,6 @@ const App: React.FC = () => {
       if (targetUrl && sourceItemRefs.current[targetUrl]) {
         el = sourceItemRefs.current[targetUrl];
       } else if (targetUrl) {
-        // host-based fallback
         const th = safeHost(targetUrl);
         if (th) {
           const key = Object.keys(sourceItemRefs.current).find(
@@ -516,30 +484,14 @@ const App: React.FC = () => {
   });
 
   const [isTranslating, setIsTranslating] = useState(false);
-
   const [isGoogleAuthReady, setIsGoogleAuthReady] = useState(false);
 
   const LANGUAGES = useMemo(
     () => [
       { code: "KO", label: "🇰🇷", name: "Korean", prompt: "한국 시장 관점" },
-      {
-        code: "US",
-        label: "🇺🇸",
-        name: "English",
-        prompt: "US Market Perspective",
-      },
-      {
-        code: "JP",
-        label: "🇯🇵",
-        name: "Japanese",
-        prompt: "Japanese Market Perspective",
-      },
-      {
-        code: "CN",
-        label: "🇨🇳",
-        name: "Chinese",
-        prompt: "Chinese Market Perspective",
-      },
+      { code: "US", label: "🇺🇸", name: "English", prompt: "US Market Perspective" },
+      { code: "JP", label: "🇯🇵", name: "Japanese", prompt: "Japanese Market Perspective" },
+      { code: "CN", label: "🇨🇳", name: "Chinese", prompt: "Chinese Market Perspective" },
     ],
     []
   );
@@ -549,20 +501,13 @@ const App: React.FC = () => {
     message: "",
   });
 
-  const [chatCommand, setChatCommand] = useState<{
-    text: string;
-    time: number;
-  } | null>(null);
+  const [chatCommand, setChatCommand] = useState<{ text: string; time: number } | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast({ visible: true, message });
-    window.setTimeout(
-      () => setToast({ visible: false, message: "" }),
-      2500
-    );
+    window.setTimeout(() => setToast({ visible: false, message: "" }), 2500);
   }, []);
 
-  // ✅ Fact label 스타일 배지
   const factLabelBadge = (label?: string) => {
     const l = (label || "").toLowerCase();
     if (l === "fact") return "bg-emerald-50 text-emerald-700 border-emerald-200";
@@ -570,7 +515,6 @@ const App: React.FC = () => {
     return "bg-amber-50 text-amber-700 border-amber-200";
   };
 
-  // ✅ Fact label 한글 표기
   const factLabelTextKo = (label?: string) => {
     const l = (label || "").toLowerCase();
     if (l === "fact") return "팩트";
@@ -578,22 +522,11 @@ const App: React.FC = () => {
     return "해석";
   };
 
-  const safeCitations = useMemo(
-    () => (state.analysis?.citations || []) as any[],
-    [state.analysis]
-  );
-  const safeFactChecks = useMemo(
-    () => (state.analysis?.factChecks || []) as any[],
-    [state.analysis]
-  );
+  const safeCitations = useMemo(() => (state.analysis?.citations || []) as any[], [state.analysis]);
+  const safeFactChecks = useMemo(() => (state.analysis?.factChecks || []) as any[], [state.analysis]);
 
-  // ✅ SSR-safe window href (1340 장점 이식)
-  const getWindowHref = useCallback(
-    () => (typeof window !== "undefined" ? window.location.href : ""),
-    []
-  );
+  const getWindowHref = useCallback(() => (typeof window !== "undefined" ? window.location.href : ""), []);
 
-  // ✅ 로컬 키 -> window.process.env 세팅(번들 환경 대응)
   useEffect(() => {
     const savedKey = localStorage.getItem("gemini_api_key");
     if (savedKey && typeof window !== "undefined") {
@@ -663,7 +596,6 @@ const App: React.FC = () => {
     ).trim();
   }, []);
 
-  // ✅ 구글 인증 준비
   useEffect(() => {
     initGoogleAuth().then((success) => setIsGoogleAuthReady(!!success));
   }, []);
@@ -701,7 +633,6 @@ const App: React.FC = () => {
     setState((prev) => ({ ...prev, error: null }));
   }, [tempApiKey, tempSerperKey, showToast]);
 
-  // ✅ [업그레이드] performSearch: A 근거모드 분기 + Serper evidence
   const performSearch = useCallback(
     async (searchKeyword: string, modePrompt: string) => {
       if (!searchKeyword.trim()) return;
@@ -738,7 +669,6 @@ const App: React.FC = () => {
         const service = new GeminiTrendService();
         const finalPrompt = `${selectedPersona.prompt}\n\n${modePrompt}`;
 
-        // ✅ A 모드: Serper 근거 기반 요약(citations/factChecks 포함)
         if (useEvidenceMode) {
           let sources: any[] = [];
           try {
@@ -748,17 +678,16 @@ const App: React.FC = () => {
           }
 
           const evidenceArray = normalizeEvidenceArray(
-          (sources || []).map((s: any) => ({
-            title: s?.title,
-            url: s?.url,
-            source: s?.source,
-            snippet: s?.snippet,
-            date: s?.date,
-          })),
-          12
-        );
+            (sources || []).map((s: any) => ({
+              title: s?.title,
+              url: s?.url,
+              source: s?.source,
+              snippet: s?.snippet,
+              date: s?.date,
+            })),
+            12
+          );
 
-          // 근거가 너무 부족하면 기존 모드로 폴백
           if (evidenceArray.length < 3) {
             const { news, analysis } = await service.fetchTrendsAndAnalysis(
               searchKeyword,
@@ -793,7 +722,6 @@ const App: React.FC = () => {
           return;
         }
 
-        // ✅ 기존 모드
         const { news, analysis } = await service.fetchTrendsAndAnalysis(
           searchKeyword,
           finalPrompt
@@ -832,7 +760,6 @@ const App: React.FC = () => {
     [performSearch, state.keyword, selectedMode.prompt]
   );
 
-  // ⭐️ [G메일 요약] A 모드(evidence)로 분석 (항상 A로 돌림)
   const handleGmailSummary = useCallback(async () => {
     let currentAuthStatus = isGoogleAuthReady;
 
@@ -897,16 +824,16 @@ ${combinedEmailText}
 `.trim();
 
       const evidenceArray = normalizeEvidenceArray(
-      (emailData || []).slice(0, 12).map((e: any) => ({
-        title: e.title || "G메일 기사",
-        url: e.link || e.url || "https://mail.google.com/",
-        source: e.source || "Gmail",
-        snippet: String(e.body || "").slice(0, 280),
-        date: e.publishedAt || e.date || "",
-      })),
-      12,
-      { allowBlocked: true }
-    );
+        (emailData || []).slice(0, 12).map((e: any) => ({
+          title: e.title || "G메일 기사",
+          url: e.link || e.url || "https://mail.google.com/",
+          source: e.source || "Gmail",
+          snippet: String(e.body || "").slice(0, 280),
+          date: e.publishedAt || e.date || "",
+        })),
+        12,
+        { allowBlocked: true }
+      );
 
       const { analysis } = await service.fetchTrendsAndAnalysisA(
         "G메일 뉴스 요약",
@@ -914,7 +841,6 @@ ${combinedEmailText}
         evidenceArray
       );
 
-      // ✅ 1340 장점: date도 함께 저장(최신순 정렬 품질 향상)
       const mappedSources: NewsItem[] = (emailData || []).map((e: any) => ({
         title: `📰 ${
           String(e.title || "").length > 40
@@ -972,12 +898,7 @@ ${combinedEmailText}
   }, [state.analysis, state.keyword, selectedMode.name]);
 
   const handleTranslate = useCallback(
-    async (targetLang: {
-      code: string;
-      label: string;
-      name: string;
-      prompt: string;
-    }) => {
+    async (targetLang: { code: string; label: string; name: string; prompt: string; }) => {
       if (!state.analysis || isTranslating) return;
       setIsTranslating(true);
       showToast(`${targetLang.label} ${targetLang.name} 버전으로 분석 중...`);
@@ -1055,7 +976,6 @@ ${currentContent}
       return;
     }
 
-    // ✅ activeElement 안전 처리
     const active = document.activeElement as HTMLElement | null;
     const btn =
       active && active.tagName === "BUTTON" ? (active as HTMLButtonElement) : null;
@@ -1063,14 +983,11 @@ ${currentContent}
 
     if (btn) btn.innerText = "⏳ 저장 중...";
 
-    // ✅ html2canvas가 oklch() 컬러를 파싱하지 못해 PDF 저장이 실패하는 케이스 방어
-    // - clone DOM(#pdf-export-clone)에만 안전한(hex/rgb) 컬러 CSS를 강제로 적용합니다.
     let pdfSafeStyleEl: HTMLStyleElement | null = null;
 
     try {
       showToast("⏳ PDF 생성 중...");
 
-      // 화면 레이아웃 영향을 피하기 위해 클론을 만들어 렌더
       const clone = element.cloneNode(true) as HTMLElement;
       clone.id = "pdf-export-clone";
       clone.style.width = "210mm";
@@ -1099,14 +1016,10 @@ ${currentContent}
       `;
       document.head.appendChild(pdfSafeStyleEl);
 
-      // ✅ html2canvas가 oklch() 색상 함수를 파싱 못하는 문제 방어
-      // - clone DOM에 계산된 색상을 rgb(...)로 인라인 주입해 파서 에러를 피합니다.
       try {
         const els = Array.from(clone.querySelectorAll<HTMLElement>("*"));
         for (const el of els) {
           const cs = window.getComputedStyle(el);
-          // ⚠️ 일부 환경에서 getComputedStyle이 oklch()를 반환 → html2canvas 파싱 오류
-          // oklch 포함 값은 건드리지 않고, 위의 PDF 전용 CSS 오버라이드가 처리하도록 둡니다.
           if (cs.color && !cs.color.includes("oklch")) el.style.color = cs.color;
           if (cs.backgroundColor && !cs.backgroundColor.includes("oklch")) el.style.backgroundColor = cs.backgroundColor;
           if (cs.borderTopColor && !cs.borderTopColor.includes("oklch")) el.style.borderTopColor = cs.borderTopColor;
@@ -1114,21 +1027,17 @@ ${currentContent}
           if (cs.borderBottomColor && !cs.borderBottomColor.includes("oklch")) el.style.borderBottomColor = cs.borderBottomColor;
           if (cs.borderLeftColor && !cs.borderLeftColor.includes("oklch")) el.style.borderLeftColor = cs.borderLeftColor;
           if (cs.outlineColor && !cs.outlineColor.includes("oklch")) el.style.outlineColor = cs.outlineColor;
-          // box-shadow는 색상이 섞여 있어도 보통 안전하지만, 혹시 몰라 그대로 둡니다.
         }
       } catch (e) {
         console.warn("PDF export color-sanitize failed (continuing):", e);
       }
 
-
-      // 이미지 CORS 방어 (base64/외부 이미지 모두)
       clone.querySelectorAll("img").forEach((img) => {
         try {
           (img as HTMLImageElement).crossOrigin = "anonymous";
         } catch {}
       });
 
-      // DOM 반영을 1프레임 보장 (간헐적 빈 캔버스 방지)
       await new Promise((r) => requestAnimationFrame(() => r(null)));
 
       const canvas = await html2canvas(clone, {
@@ -1184,7 +1093,6 @@ ${currentContent}
   }, [showToast]);
 
   const handleShare = useCallback(() => setIsShareModalOpen(true), []);
-
 
   const summarizeSwotPoint = useCallback((text: string, fallbackLabel: string) => {
     const clean = renderText(String(text || ""))
@@ -1276,45 +1184,47 @@ ${currentContent}
     );
   }, [getSwotContent, isDarkMode]);
 
+  // ⭐️ [버그 해결!] 정렬(최신순/관련도순) 기능 완벽 고침
   const sortedNewsSources = useMemo(() => {
-  const items = [...newsSources].map((item, index) => ({
-    ...item,
-    __originalIndex: index,
-  }));
+    const items = [...newsSources].map((item, index) => ({
+      ...item,
+      __originalIndex: index,
+    }));
 
-  if (newsSort === "latest") {
+    if (newsSort === "latest") {
+      return items.sort((a: any, b: any) => {
+        const at = parseDateToTs(a?.date);
+        const bt = parseDateToTs(b?.date);
+
+        // 1. 날짜가 다르면 무조건 날짜(최신) 우선 정렬
+        if (bt !== at) {
+          if (!bt && !at) return a.__originalIndex - b.__originalIndex;
+          if (!bt) return -1;
+          if (!at) return 1;
+          return bt - at;
+        }
+
+        // 2. ⭐️ [버그 수정됨] 날짜가 완벽히 동일할 때 (같은 G메일에서 온 기사들)
+        // 기존에는 여기서 관련도 점수를 비교했기 때문에, 최신순 버튼과 관련도 버튼이 똑같이 작동했습니다.
+        // 이제는 원본 메일에 있던 기사 순서(원래 인덱스)를 유지하게 하여 명확한 차이를 줍니다.
+        return a.__originalIndex - b.__originalIndex;
+      });
+    }
+
+    // 관련도순 정렬
     return items.sort((a: any, b: any) => {
-      const at = parseDateToTs(a?.date);
-      const bt = parseDateToTs(b?.date);
-
-      if (bt !== at) {
-        if (!bt && !at) return a.__originalIndex - b.__originalIndex;
-        if (!bt) return -1;
-        if (!at) return 1;
-        return bt - at;
-      }
-
       const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
       const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
+
       if (br !== ar) return br - ar;
+
+      const at = parseDateToTs(a?.date);
+      const bt = parseDateToTs(b?.date);
+      if (bt !== at) return bt - at;
 
       return a.__originalIndex - b.__originalIndex;
     });
-  }
-
-  return items.sort((a: any, b: any) => {
-    const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
-    const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
-
-    if (br !== ar) return br - ar;
-
-    const at = parseDateToTs(a?.date);
-    const bt = parseDateToTs(b?.date);
-    if (bt !== at) return bt - at;
-
-    return a.__originalIndex - b.__originalIndex;
-  });
-}, [newsSources, newsSort, state.keyword, state.analysis]);
+  }, [newsSources, newsSort, state.keyword, state.analysis]);
 
   const handleCopyEvidence = useCallback(async () => {
     if (!state.analysis) return;
@@ -1346,7 +1256,6 @@ ${currentContent}
     }
   }, [safeCitations, safeFactChecks, showToast, state.analysis, state.keyword]);
 
-  // ✅ 1340 장점: 공유 링크 복사도 toast로 통일(기존 alert 제거)
   const handleCopyShareLink = useCallback(async () => {
     try {
       const href = getWindowHref();
@@ -1572,7 +1481,6 @@ ${currentContent}
                 </button>
               ))}
 
-              {/* ✅ A 근거모드 토글 */}
               <button
                 onClick={() => setUseEvidenceMode((v) => !v)}
                 disabled={state.isLoading}
@@ -1655,7 +1563,6 @@ ${currentContent}
                               <UserCog size={10} /> {selectedPersona.name}
                             </span>
 
-                            {/* ✅ A 모드 배지 */}
                             <span
                               className={`px-3 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 ${
                                 useEvidenceMode
@@ -1724,7 +1631,6 @@ ${currentContent}
                         {renderText(state.analysis.summary)}
                       </div>
 
-                      {/* ✅ 근거/팩트체크 섹션 */}
                       {(safeFactChecks.length || safeCitations.length) ? (
                         <div className={`p-8 rounded-[32px] border shadow-sm ${isDarkMode ? "bg-gray-800 border-gray-700" : "bg-[#F5F5F7] border-gray-100/50"}`}>
                           <div className="flex items-center justify-between gap-3 mb-5">
@@ -1856,7 +1762,6 @@ ${currentContent}
                     <Globe className="text-[#0071e3]" size={24} /> 소스 피드
                   </h3>
 
-                  {/* ✅ 최신순 정렬 유지 */}
                   <div className={`flex gap-1 p-1 rounded-lg ${isDarkMode ? "bg-gray-800" : "bg-gray-50"}`}>
                     <button
                       onClick={() => setNewsSort("latest")}
@@ -2087,7 +1992,6 @@ ${currentContent}
                 </p>
               </div>
 
-              {/* ✅ A단계: 근거/팩트체크 (PDF 포함) */}
               {(safeFactChecks.length || safeCitations.length) ? (
                 <div className="bg-[#F5F5F7] p-8 rounded-3xl h-auto w-full border border-gray-100/50">
                   <h3 className="text-[#0071e3] font-black mb-4 text-sm uppercase tracking-widest flex items-center gap-2">
