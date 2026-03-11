@@ -342,13 +342,17 @@ const getNewsRelevanceScore = (item: Partial<NewsItem>, keyword: string, analysi
   }
 
   const citations = Array.isArray(analysis?.citations) ? analysis.citations : [];
-  const citationMatchCount = citations.filter((c: any) => {
-    const cu = normalizeUrl(String(c?.url || ""));
-    const iu = normalizeUrl(uri);
-    if (!cu || !iu) return false;
-    if (cu === iu) return true;
-    return safeHost(cu) && safeHost(iu) && safeHost(cu) === safeHost(iu);
-  }).length;
+const citationMatchCount = citations.filter((c: any) => {
+  const cu = normalizeNewsUrl(String(c?.url || ""));
+  const iu = normalizeNewsUrl(uri);
+  if (!cu || !iu) return false;
+  if (cu === iu) return true;
+
+  const ch = getNewsHost({ uri: cu } as Partial<NewsItem>);
+  const ih = getNewsHost({ uri: iu } as Partial<NewsItem>);
+
+  return !!ch && !!ih && ch === ih;
+}).length;
 
   const citationBoost = citationMatchCount * 22;
 
