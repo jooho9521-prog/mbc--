@@ -261,7 +261,7 @@ export const getNewsEmails = (opts?: {
 
         // ✅ score + timestamp 계산
         const enriched = filteredSeen.map((it) => {
-          const ts = toTimestamp(it.publishedAt);
+          const ts = toTimestamp(it.articlePublishedAt || it.publishedAt);
           return {
             ...it,
             _ts: ts,
@@ -816,8 +816,11 @@ function normalizeItem(item: GmailNewsItem): GmailNewsItem {
 
   const source = safeHostname(normalizedLink) || item.source || "웹 뉴스";
 
-  // publishedAt도 ISO로 정규화
+  // publishedAt / articlePublishedAt 도 ISO로 정규화
   const publishedAt = item.publishedAt ? toIsoSafe(item.publishedAt) : undefined;
+  const articlePublishedAt = item.articlePublishedAt
+    ? toIsoSafe(item.articlePublishedAt)
+    : undefined;
 
   return {
     ...item,
@@ -826,6 +829,7 @@ function normalizeItem(item: GmailNewsItem): GmailNewsItem {
     title: cleanInlineText(item.title || ""),
     body: cleanInlineText(item.body || ""),
     publishedAt: publishedAt || item.publishedAt,
+    articlePublishedAt: articlePublishedAt || item.articlePublishedAt,
   };
 }
 
@@ -879,8 +883,8 @@ function pickBetterItem(a: GmailNewsItem, b: GmailNewsItem) {
   const aBody = (a.body || "").length;
   const bBody = (b.body || "").length;
 
-  const aHasDate = !!a.publishedAt;
-  const bHasDate = !!b.publishedAt;
+  const aHasDate = !!(a.articlePublishedAt || a.publishedAt);
+  const bHasDate = !!(b.articlePublishedAt || b.publishedAt);
 
   const aScore = aTitle * 2 + aBody + (aHasDate ? 10 : 0);
   const bScore = bTitle * 2 + bBody + (bHasDate ? 10 : 0);
@@ -969,7 +973,7 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
 
       if (cache.has(url)) {
         const cached = cache.get(url) || "";
-        return cached ? { ...item, publishedAt: cached } : item;
+        return cached ? { ...item, articlePublishedAt: cached } : item;
       }
 
       const extracted = await fetchArticlePublishedAt(url);
@@ -989,18 +993,23 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
   return enriched;
 }
 
+const ARTICLE_DATE_API_PATH = "/api/article-date";
+
 async function fetchArticlePublishedAt(url: string): Promise<string> {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) return "";
+
   try {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 3500);
+    const timer = window.setTimeout(() => controller.abort(), 7000);
 
-    const res = await fetch(url, {
+    const apiUrl = `${ARTICLE_DATE_API_PATH}?url=${encodeURIComponent(normalizedUrl)}`;
+    const res = await fetch(apiUrl, {
       method: "GET",
-      mode: "cors",
       credentials: "omit",
       signal: controller.signal,
       headers: {
-        Accept: "text/html,application/xhtml+xml",
+        Accept: "application/json",
       },
     });
 
@@ -1008,8 +1017,14 @@ async function fetchArticlePublishedAt(url: string): Promise<string> {
 
     if (!res.ok) return "";
 
-    const html = await res.text();
-    const extracted = extractPublishedDateFromHtml(html);
+    const data = await res.json().catch(() => null);
+    const extracted =
+      toIsoSafe(String(data?.publishedAt || "")) ||
+      toIsoSafe(String(data?.articlePublishedAt || "")) ||
+      toIsoSafe(String(data?.date || "")) ||
+      toIsoSafe(String(data?.resolvedDate || "")) ||
+      toIsoSafe(String(data?.value || ""));
+
     return extracted || "";
   } catch {
     return "";
