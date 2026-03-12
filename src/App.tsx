@@ -426,6 +426,7 @@ const App: React.FC = () => {
 
   // ⭐️ 검색할 특정 날짜를 보관할 상태 변수
   const [targetDate, setTargetDate] = useState("");
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
 
   const [newsSources, setNewsSources] = useState<NewsItem[]>([]);
   const [newsSort, setNewsSort] = useState<"relevance" | "latest">("relevance");
@@ -769,6 +770,27 @@ const App: React.FC = () => {
     [performSearch, state.keyword, selectedMode.prompt]
   );
 
+  const normalizeDateValue = useCallback((value: string) => {
+    return String(value || "").trim();
+  }, []);
+
+  const toggleSelectedDate = useCallback((value: string) => {
+    const normalized = normalizeDateValue(value);
+    if (!normalized) return;
+
+    setSelectedDates((prev) => {
+      if (prev.includes(normalized)) {
+        return prev.filter((d) => d !== normalized);
+      }
+      return [...prev, normalized].sort();
+    });
+  }, [normalizeDateValue]);
+
+  const removeSelectedDate = useCallback((value: string) => {
+    const normalized = normalizeDateValue(value);
+    setSelectedDates((prev) => prev.filter((d) => d !== normalized));
+  }, [normalizeDateValue]);
+
   const handleGmailSummary = useCallback(async () => {
     let currentAuthStatus = isGoogleAuthReady;
 
@@ -807,15 +829,31 @@ const App: React.FC = () => {
 
     try {
       showToast("G메일에서 뉴스를 가져오는 중...");
-      
-      // ⭐️ 선택한 날짜가 있으면 'YYYY/MM/DD' 포맷으로 변경하여 API에 전달합니다.
-      const formattedDate = targetDate ? targetDate.replace(/-/g, '/') : undefined;
-      const emailData = (await getNewsEmails({ targetDate: formattedDate })) as any[];
 
-      // ⭐️ 해당 날짜에 메일이 없는 경우 안내 띄우기
+      const normalizedSingleDate = targetDate ? targetDate.replace(/\./g, "-").replace(/\//g, "-") : "";
+      const normalizedMultiDates = (selectedDates || [])
+        .map((d) => d.replace(/\./g, "-").replace(/\//g, "-"))
+        .filter(Boolean);
+
+      const finalDates = Array.from(
+        new Set([
+          ...normalizedMultiDates,
+          ...(normalizedSingleDate ? [normalizedSingleDate] : []),
+        ])
+      ).sort();
+
+      const emailData = (await getNewsEmails({
+        targetDate: finalDates.length === 1 ? finalDates[0] : undefined,
+        targetDates: finalDates.length > 1 ? finalDates : undefined,
+        sortBy: newsSort === "latest" ? "recent" : "score",
+      })) as any[];
+
       if (!emailData || emailData.length === 0) {
-        showToast(targetDate ? `${targetDate}에 수신된 뉴스 메일이 없습니다.` : "수신된 뉴스 메일이 없습니다.");
-        setState(prev => ({ ...prev, isLoading: false }));
+        const emptyLabel = finalDates.length
+          ? `${finalDates.join(", ")}에 수신된 뉴스 메일이 없습니다.`
+          : "수신된 뉴스 메일이 없습니다.";
+        showToast(emptyLabel);
+        setState((prev) => ({ ...prev, isLoading: false }));
         return;
       }
 
@@ -860,19 +898,19 @@ ${combinedEmailText}
         evidenceArray
       );
 
-      const mappedSources: NewsItem[] = (emailData || []).map((e: any) => ({
-        title: `📰 ${
-          String(e.title || "").length > 40
-            ? String(e.title).substring(0, 40) + "..."
-            : e.title
-        }`,
-        uri: e.link || "https://mail.google.com/",
+      const mappedSources = (emailData || []).map((e: any, index: number) => ({
+        title: String(e.title || `G메일 기사 ${index + 1}`).trim() || `G메일 기사 ${index + 1}`,
+        uri: e.link || e.url || "https://mail.google.com/",
         source: e.source || "웹 뉴스",
+        snippet: String(e.body || "").slice(0, 280),
         date: e.publishedAt || e.date || "",
-      }));
+        ts: e.publishedAt ? new Date(e.publishedAt).getTime() : 0,
+        relevanceScore: typeof e.score === "number" ? e.score : 0,
+        originalRank: index,
+      })) as any[];
 
       const uniqueSources = sanitizeNewsItems(
-        Array.from(new Map(mappedSources.map((item: any) => [item.uri, item])).values()),
+        Array.from(new Map(mappedSources.map((item: any) => [item.uri, item])).values()) as any,
         true
       );
 
@@ -891,7 +929,7 @@ ${combinedEmailText}
       }));
       showToast("G메일 요약 실패: " + (err?.message || "오류"));
     }
-  }, [getGeminiRuntimeKey, isGoogleAuthReady, selectedPersona.prompt, showToast, targetDate]);
+  }, [getGeminiRuntimeKey, isGoogleAuthReady, newsSort, selectedDates, selectedPersona.prompt, showToast, targetDate]);
 
   const handleModeChange = useCallback(
     (mode: (typeof ANALYSIS_MODES)[number]) => {
@@ -1512,37 +1550,72 @@ ${currentContent}
                 근거모드 {useEvidenceMode ? "ON" : "OFF"}
               </button>
 
-              <div className="ml-auto flex items-center gap-2">
-                {/* ⭐️ 날짜 선택 달력 추가 */}
-                <input 
-                  type="date" 
-                  value={targetDate}
-                  onChange={(e) => setTargetDate(e.target.value)}
-                  className={`px-4 py-1.5 text-[12px] font-bold rounded-full transition-all border shadow-sm outline-none cursor-pointer ${
-                    isDarkMode
-                      ? "bg-gray-900 border-gray-800 text-gray-300"
-                      : "bg-white border-gray-200 text-gray-700"
-                  }`}
-                  title="가져올 뉴스 날짜를 선택하세요 (비우면 최근순서)"
-                />
+              <div className="ml-auto flex flex-col items-end gap-2">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="date" 
+                    value={targetDate}
+                    onChange={(e) => setTargetDate(e.target.value)}
+                    className={`px-4 py-1.5 text-[12px] font-bold rounded-full transition-all border shadow-sm outline-none cursor-pointer ${
+                      isDarkMode
+                        ? "bg-gray-900 border-gray-800 text-gray-300"
+                        : "bg-white border-gray-200 text-gray-700"
+                    }`}
+                    title="가져올 뉴스 날짜를 선택하세요 (비우면 최근순서)"
+                  />
 
-                <button
-                  onClick={() => void handleGmailSummary()}
-                  disabled={state.isLoading}
-                  className={`px-5 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm flex items-center gap-2 ${
-                    isDarkMode
-                      ? "bg-red-900/30 border-red-800 text-red-300 hover:bg-red-900/50"
-                      : "bg-red-50 border-red-200 text-red-600 hover:bg-red-100 hover:border-red-300"
-                  }`}
-                  title="선택한 날짜의 G메일 '뉴스요약'을 분석합니다"
-                >
-                  {state.isLoading && state.keyword === "G메일 '뉴스요약' 브리핑" ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Mail size={14} />
-                  )}
-                  G메일 뉴스 요약
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleSelectedDate(targetDate)}
+                    disabled={!targetDate || state.isLoading}
+                    className={`px-4 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm ${
+                      isDarkMode
+                        ? "bg-gray-900 border-gray-800 text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+                        : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                    }`}
+                    title="선택한 날짜를 목록에 추가합니다"
+                  >
+                    날짜 추가
+                  </button>
+
+                  <button
+                    onClick={() => void handleGmailSummary()}
+                    disabled={state.isLoading}
+                    className={`px-5 py-2 text-[12px] font-bold rounded-full transition-all border shadow-sm flex items-center gap-2 ${
+                      isDarkMode
+                        ? "bg-red-900/30 border-red-800 text-red-300 hover:bg-red-900/50"
+                        : "bg-red-50 border-red-200 text-red-600 hover:bg-red-100 hover:border-red-300"
+                    }`}
+                    title="선택한 날짜의 G메일 '뉴스요약'을 분석합니다"
+                  >
+                    {state.isLoading && state.keyword === "G메일 '뉴스요약' 브리핑" ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Mail size={14} />
+                    )}
+                    G메일 뉴스 요약
+                  </button>
+                </div>
+
+                {!!selectedDates.length && (
+                  <div className="flex flex-wrap justify-end gap-2 max-w-[520px]">
+                    {selectedDates.map((date) => (
+                      <button
+                        key={date}
+                        type="button"
+                        onClick={() => removeSelectedDate(date)}
+                        className={`px-3 py-1 text-[11px] rounded-full border shadow-sm ${
+                          isDarkMode
+                            ? "bg-gray-900 border-gray-800 text-gray-300 hover:bg-gray-800"
+                            : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                        }`}
+                        title="목록에서 제거"
+                      >
+                        {date} ×
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
