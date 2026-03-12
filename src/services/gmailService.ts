@@ -158,15 +158,11 @@ export const getNewsEmails = (opts?: {
   excludeSeen?: boolean;
   maxMessagesToRead?: number;
   maxItemsToReturn?: number;
-
-  /** NEW: 정렬 방식 */
   sortBy?: "hybrid" | "score" | "recent";
-
-  /** NEW: fallbackQuery를 자동 생성할 때 사용할 최근 n일 */
   daysBack?: number;
-
-  /** NEW: 점수 계산 힌트(키워드) */
   keywordHint?: string;
+  targetDate?: string;
+  targetDates?: string[];
 }): Promise<GmailNewsItem[]> => {
   return new Promise((resolve, reject) => {
     if (!tokenClient)
@@ -197,6 +193,7 @@ export const getNewsEmails = (opts?: {
 
     const sortBy = opts?.sortBy ?? "hybrid";
     const keywordHint = (opts?.keywordHint ?? keywordHintFromContext(labelName)).trim();
+    const requestedDates = normalizeTargetDates(opts?.targetDate, opts?.targetDates);
 
     tokenClient.callback = async (resp: any) => {
       if (resp?.error !== undefined) {
@@ -208,7 +205,8 @@ export const getNewsEmails = (opts?: {
           gapi,
           labelName,
           fallbackQuery,
-          maxMessagesToRead
+          maxMessagesToRead,
+          requestedDates
         );
 
         if (messageIds.length === 0) {
@@ -299,27 +297,121 @@ async function listMessageIds(
   gapi: any,
   labelName: string,
   fallbackQuery: string,
-  maxMessagesToRead: number
+  maxMessagesToRead: number,
+  requestedDates: string[] = []
 ): Promise<string[]> {
   const labelId = await findLabelId(gapi, labelName);
 
-  if (labelId) {
+  if (!requestedDates.length) {
+    if (labelId) {
+      const res = await gapi.client.gmail.users.messages.list({
+        userId: "me",
+        labelIds: [labelId],
+        maxResults: maxMessagesToRead,
+      });
+      const messages = res?.result?.messages || [];
+      return messages.map((m: any) => m.id).filter(Boolean);
+    }
+
     const res = await gapi.client.gmail.users.messages.list({
       userId: "me",
-      labelIds: [labelId],
+      q: fallbackQuery,
       maxResults: maxMessagesToRead,
     });
     const messages = res?.result?.messages || [];
     return messages.map((m: any) => m.id).filter(Boolean);
   }
 
-  const res = await gapi.client.gmail.users.messages.list({
-    userId: "me",
-    q: fallbackQuery,
-    maxResults: maxMessagesToRead,
-  });
-  const messages = res?.result?.messages || [];
-  return messages.map((m: any) => m.id).filter(Boolean);
+  const collectedIds = new Set<string>();
+  const perDateLimit = Math.max(1, Math.min(maxMessagesToRead, 50));
+
+  for (const normalizedDate of requestedDates) {
+    const dayQuery = buildSingleDayQuery(fallbackQuery, normalizedDate);
+
+    const params: Record<string, any> = {
+      userId: "me",
+      q: dayQuery,
+      maxResults: perDateLimit,
+    };
+
+    if (labelId) {
+      params.labelIds = [labelId];
+    }
+
+    const res = await gapi.client.gmail.users.messages.list(params);
+    const messages = res?.result?.messages || [];
+
+    for (const message of messages) {
+      if (message?.id) collectedIds.add(message.id);
+    }
+  }
+
+  return Array.from(collectedIds).slice(0, maxMessagesToRead * requestedDates.length);
+}
+
+/**
+ * ✅ 여러 날짜 입력 정규화
+ */
+function normalizeTargetDates(targetDate?: string, targetDates?: string[]) {
+  const raw = [
+    ...(targetDate ? [targetDate] : []),
+    ...((targetDates || []).filter(Boolean) as string[]),
+  ];
+
+  const unique = new Set<string>();
+
+  for (const value of raw) {
+    const normalized = normalizeDateInput(value);
+    if (normalized) unique.add(normalized);
+  }
+
+  return Array.from(unique).sort();
+}
+
+function normalizeDateInput(input?: string) {
+  const value = (input || "").trim();
+  if (!value) return "";
+
+  const normalized = value.replace(/\./g, "-").replace(/\//g, "-");
+  const match = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return "";
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  if (month < 1 || month > 12 || day < 1 || day > 31) return "";
+
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() + 1 !== month ||
+    utc.getUTCDate() !== day
+  ) {
+    return "";
+  }
+
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(
+    2,
+    "0"
+  )}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * ✅ 특정 하루 검색 쿼리 생성
+ * Gmail after/before는 epoch seconds 사용
+ */
+function buildSingleDayQuery(baseQuery: string, normalizedDate: string) {
+  const [year, month, day] = normalizedDate.split("-").map(Number);
+
+  const localStart = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const localEnd = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+
+  const afterEpoch = Math.floor(localStart.getTime() / 1000);
+  const beforeEpoch = Math.floor(localEnd.getTime() / 1000);
+
+  const dateQuery = `after:${afterEpoch} before:${beforeEpoch}`;
+  return `${baseQuery} ${dateQuery}`.trim();
 }
 
 /**
