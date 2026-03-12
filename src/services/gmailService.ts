@@ -33,6 +33,7 @@ export interface GmailNewsItem {
    * - ISO string (e.g. 2026-02-27T10:11:12.000Z)
    */
   publishedAt?: string;
+  articlePublishedAt?: string;
 
   /** 내부 계산용 (ms) */
   _ts?: number;
@@ -977,7 +978,7 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
       if (extracted) {
         return {
           ...item,
-          publishedAt: extracted,
+          articlePublishedAt: extracted,
         };
       }
 
@@ -1047,8 +1048,8 @@ function extractPublishedDateFromHtml(html: string): string {
   }
 
   const loosePatterns = [
-    /(입력|등록|기사입력|기사등록|작성)\s*[:]?\s*(20\d{2}[.\/-]\s*\d{1,2}[.\/-]\s*\d{1,2}\s*\d{1,2}:\d{2})/i,
-    /(입력|등록|기사입력|기사등록|작성)\s*[:]?\s*(20\d{2}[.\/-]\s*\d{1,2}[.\/-]\s*\d{1,2})/i,
+    /(입력|등록|기사입력|기사등록|작성|수정|업데이트|최종수정)\s*[:]?\s*(20\d{2}[.\/-]\s*\d{1,2}[.\/-]\s*\d{1,2}\s*\d{1,2}:\d{2})/i,
+    /(입력|등록|기사입력|기사등록|작성|수정|업데이트|최종수정)\s*[:]?\s*(20\d{2}[.\/-]\s*\d{1,2}[.\/-]\s*\d{1,2})/i,
   ];
 
   for (const re of loosePatterns) {
