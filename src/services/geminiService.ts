@@ -843,8 +843,10 @@ Analyze the trend for "${keyword}". Context: ${modeInstruction}
 4) Never fabricate numbers, timelines, market sizes, rankings, quotations, or future certainty.
 5) "summary" MUST contain EXACTLY 5 numbered points (1. to 5.).
 6) EACH point MUST be 2-4 sentences, concise and evidence-grounded.
-7) Return ONLY JSON (no markdown).
-8) STRICT JSON ONLY: use double quotes for keys/strings, include all commas, no trailing commas, no single quotes.
+7) If some evidence is in English or another foreign language, understand it in the original language first, then write the final report in natural Korean.
+8) Keep source titles/URLs/publishers as the original evidence values. Do not translate or alter source URLs.
+9) Return ONLY JSON (no markdown).
+10) STRICT JSON ONLY: use double quotes for keys/strings, include all commas, no trailing commas, no single quotes.
 
 [A-TRUST ENHANCEMENTS]
 - "citations": For each point 1~5, attach 1~3 source URLs from the evidence only.

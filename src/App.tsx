@@ -872,9 +872,15 @@ const App: React.FC = () => {
       const finalPrompt = `${selectedPersona.prompt}
 
 다음은 사용자의 구글 알림(뉴스레터)에서 추출한 실제 최신 뉴스 기사 모음입니다.
+국내 뉴스와 해외 뉴스가 함께 포함될 수 있습니다.
 이 기사들을 종합적으로 분석하여 핵심 트렌드 보고서를 작성해주세요.
 
-**중요: 분석 결과에 어떤 언론사(출처)의 기사인지 반드시 언급해주세요.**
+**중요 지침**
+1. 분석 리포트, 요약, 핵심포인트, 근거 설명은 반드시 자연스러운 한국어로 작성하세요.
+2. 해외 뉴스가 영어 등 외국어 원문이어도 내용을 이해한 뒤 한국어로 번역·해석해서 분석에 반영하세요.
+3. 소스피드에는 각 기사 제목/출처/링크를 원문 기준으로 유지합니다.
+4. 분석 결과에는 어떤 언론사(출처)의 기사인지 반드시 언급해주세요.
+5. Gmail에서 수집된 기사만 근거로 사용하고 외부 추정은 최소화하세요.
 
 [뉴스 기사 본문]
 ${combinedEmailText}
@@ -886,7 +892,7 @@ ${combinedEmailText}
           url: e.link || e.url || "https://mail.google.com/",
           source: e.source || "Gmail",
           snippet: String(e.body || "").slice(0, 280),
-          date: e.publishedAt || e.date || "",
+          date: e.articlePublishedAt || e.publishedAt || e.date || "",
         })),
         12,
         { allowBlocked: true }
@@ -903,8 +909,8 @@ ${combinedEmailText}
         uri: e.link || e.url || "https://mail.google.com/",
         source: e.source || "웹 뉴스",
         snippet: String(e.body || "").slice(0, 280),
-        date: e.publishedAt || e.date || "",
-        ts: e.publishedAt ? new Date(e.publishedAt).getTime() : 0,
+        date: e.articlePublishedAt || e.publishedAt || e.date || "",
+        ts: new Date(e.articlePublishedAt || e.publishedAt || e.date || "").getTime() || 0,
         relevanceScore: typeof e.score === "number" ? e.score : 0,
         originalRank: index,
       })) as any[];
