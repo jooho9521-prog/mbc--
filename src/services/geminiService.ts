@@ -959,9 +959,16 @@ ${stylePrompt || "깔끔하고 고급스러운 카드뉴스 스타일"}
 
 [TEXT BAN RULE - MUST ALWAYS APPLY]
 - 카드뉴스 배경 이미지에는 한글, 영어, 숫자, 문자, 로고, 워터마크, 타이포그래피가 절대 들어가면 안 됩니다.
-- The generated card image prompt must explicitly forbid any readable text.
-- Always assume the final card image background must contain NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO LOGOS, NO WATERMARKS.
+- The generated card image prompt must explicitly forbid any readable text, especially Hangul/Korean, English letters, words, and numbers.
+- Always assume the final card image background must contain NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO LOGOS, NO WATERMARKS, NO HANGUL, NO CAPTIONS, NO SUBTITLES, NO SIGNAGE, NO NEWSPAPER OR POSTER LAYOUT.
 - 추천 프롬프트에도 동일하게 NO TEXT 규칙을 고정 적용하세요.
+
+[QUALITY RULE - MUST ALWAYS APPLY]
+- 장면은 하나의 중심 오브젝트 또는 하나의 통일된 장면으로 구성하세요. 콜라주처럼 여러 장면을 섞지 마세요.
+- 세로형 9:16 카드뉴스 커버 구도를 기본으로 하세요.
+- 상단 또는 중앙 상단에 시선이 모이는 강한 포컬 포인트를 두고, 하단은 제목이 올라갈 수 있게 비교적 깨끗하게 유지하세요.
+- 핵심 개념 1개와 보조 개념 2개까지만 반영하세요. 너무 많은 상징을 한 장에 억지로 넣지 마세요.
+- 프롬프트에는 premium editorial, clean composition, refined materials, cinematic soft lighting, elegant depth 같은 고품질 시각 지시를 포함하세요.
 
 [OUTPUT JSON FORMAT]
 {
@@ -973,7 +980,7 @@ ${stylePrompt || "깔끔하고 고급스러운 카드뉴스 스타일"}
 - 반드시 한국어로 작성
 - 제목은 짧고 강하게
 - 본문은 정보 전달형으로 자연스럽게
-- 이미지용 프롬프트/추천 프롬프트에는 반드시 'No text, no letters, no words, no numbers, no logo, no watermark' 의미가 포함되어야 함
+- 이미지용 프롬프트/추천 프롬프트에는 반드시 'No text, no Hangul, no letters, no words, no numbers, no logo, no watermark, no captions, no subtitles, no signage' 의미가 포함되어야 함
 - JSON 외 텍스트 금지
           `.trim();
         }

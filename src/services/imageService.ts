@@ -31,6 +31,23 @@ const extractErrorMessage = (error: any): string => {
   try { return JSON.stringify(error); } catch { return String(error); }
 };
 
+
+const IMAGE_QUALITY_GUARDRAIL = `
+[QUALITY GUARDRAIL]
+- Produce a premium, high-clarity, highly polished editorial image.
+- Use a single coherent hero scene instead of a collage.
+- Keep a strong focal point and clean negative space.
+- Preserve strict 9:16 vertical cover composition with a headline-safe area.
+- Avoid busy layouts, split panels, infographic feel, newspaper feel, or screenshot feel.
+- Absolutely no readable text: no Hangul, no Korean letters, no English letters, no words, no numbers, no logo, no watermark, no UI, no labels, no signage.
+`.trim();
+
+const mergeImagePrompts = (prompt: string, stylePrompt?: string) => {
+  return [prompt, stylePrompt || "", IMAGE_QUALITY_GUARDRAIL]
+    .filter(Boolean)
+    .join("\n\n");
+};
+
 const humanizeImageError = (error: any): string => {
   const msg = extractErrorMessage(error);
   const lower = msg.toLowerCase();

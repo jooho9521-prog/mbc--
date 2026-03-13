@@ -139,63 +139,79 @@ const buildAppleMinimalPlaceholder = (keyword?: string, summary?: string) => {
 
 const buildEnterprisePromptSuggestions = (seed: string, context: string) => {
   const s = (seed || "주제").trim();
-  const kws = extractTopKeywords(s, context, 8).slice(0, 6);
-  const kwLine = kws.length ? kws.join(", ") : "key themes";
+  const kws = Array.from(new Set(extractTopKeywords(s, context, 10))).slice(0, 6);
+  const main = kws[0] || s;
+  const supportA = kws[1] || "구조 변화";
+  const supportB = kws[2] || "리스크 관리";
+  const supportC = kws[3] || "정책 전환";
 
-  const commonRules =
-    "minimal, premium, editorial, clean composition, strong negative space, no text, no watermark, no logo, no letters, no UI, no collage";
+  const noTextRules =
+    "absolutely no readable text, no Hangul, no Korean letters, no English letters, no words, no numbers, no captions, no subtitles, no signage, no labels, no newspaper layout, no poster layout, no magazine cover, no logo, no watermark, no UI, no screenshots, no collage, no clutter";
 
   return [
-    `Premium editorial key visual for “${s}”. Focus: ${kwLine}. Photorealistic, studio-grade lighting, restrained palette, high clarity, ${commonRules}.`,
-    `Minimal product-style hero image for “${s}”. Visual metaphor: ${kwLine}. High-end commercial photography, soft shadows, precise detail, ${commonRules}.`,
-    `Documentary-meets-brand visual for “${s}”. Scene: ${kwLine}. Natural light, authentic materials, cinematic framing, premium finish, ${commonRules}.`,
+    `Premium editorial 3D cover visual for “${s}”. One hero subject built around ${main}, supported by ${supportA} and ${supportB}. Vertical magazine-cover composition, upper-middle focal point, clean lower safe area for headline overlay, cinematic soft lighting, polished materials, restrained premium palette, elegant depth, highly refined details, ${noTextRules}.`,
+    `Luxury institutional illustration for “${s}”. A single coherent symbolic scene featuring ${main}, subtle ${supportA} motifs, and controlled ${supportC} cues. Modern editorial style, balanced negative space, clean hierarchy, premium finish, volumetric light, crisp details, ${noTextRules}.`,
+    `High-end news briefing key visual for “${s}”. Refined metaphor centered on ${main} with two supporting elements: ${supportB} and ${supportC}. Vertical poster-safe composition, minimal clutter, sophisticated contrast, premium brand-campaign look, sharp clarity, ${noTextRules}.`,
+    `Minimal cinematic concept art for “${s}”. One central monument-like object expressing ${main}, with restrained environmental hints of ${supportA} and ${supportB}. Calm institutional mood, elegant gradients, strong depth, clean editorial composition, ${noTextRules}.`,
   ];
 };
 
-const buildEnhancedImagePrompt = (headline: string, contextBody: string, manualPrompt?: string) => {
+const buildEnhancedImagePrompt = (
+  headline: string,
+  contextBody: string,
+  manualPrompt?: string,
+  styleHint?: string
+) => {
   const h = cleanHeadline(headline || "");
   const body = cleanAndFormatText(contextBody || "");
+  const kws = Array.from(new Set(extractTopKeywords(h || manualPrompt || "", body, 8))).slice(0, 6);
 
-  const kws = extractTopKeywords(h || manualPrompt || "", body, 6);
-  const kwLine = kws.length ? kws.join(", ") : "";
+  const hero = kws[0] || h || "core issue";
+  const supportA = kws[1] || "structural change";
+  const supportB = kws[2] || "risk management";
+  const supportC = kws[3] || "policy transition";
+  const contextLine = kws.length ? kws.join(", ") : hero;
 
-  const sceneVariants = [
-    "premium editorial photography",
-    "high-end commercial key visual",
-    "minimal cinematic scene",
-    "modern documentary style",
-    "clean brand campaign image",
-  ];
-  const cameraVariants = [
-    "shot on 85mm lens, shallow depth of field",
-    "35mm documentary lens, natural perspective",
-    "50mm lens, crisp details",
-    "cinematic framing, balanced composition",
-  ];
-  const lightingVariants = [
-    "soft studio lighting with gentle shadows",
-    "natural light, controlled contrast",
-    "low-key lighting, premium mood",
-    "high-key clean lighting, subtle gradients",
-  ];
+  const styleLabel = (styleHint || "").toLowerCase();
+  const stylePreset =
+    styleLabel.includes("아이소")
+      ? "premium isometric editorial illustration"
+      : styleLabel.includes("픽사") || styleLabel.includes("3d")
+      ? "premium stylized 3D editorial illustration"
+      : styleLabel.includes("수채")
+      ? "luxury minimal watercolor editorial illustration"
+      : styleLabel.includes("로우")
+      ? "clean low-poly editorial concept scene"
+      : "premium editorial key visual";
 
-  const compositionRules =
-    "No text, no watermark, no logo, no letters, no UI elements. Clean background. Strong negative space. Single subject or single clear scene. Not a collage.";
+  const subjectInstruction = manualPrompt && manualPrompt.trim().length > 3
+    ? `Respect the user's visual direction: ${manualPrompt.trim()}. Refine it into one coherent hero scene rather than multiple disconnected ideas.`
+    : `Create one coherent hero scene about ${h || hero}.`;
 
-  const base =
-    manualPrompt && manualPrompt.trim().length > 3
-      ? manualPrompt.trim()
-      : `Create a ${pickOne(sceneVariants)} for: ${h || "the topic"}.`;
+  const compositionBlock = [
+    "Strict 9:16 vertical cover composition for a premium news briefing card.",
+    "Place one strong focal subject in the upper-middle area.",
+    "Keep the lower-middle area cleaner for headline overlay.",
+    "Use only one hero object or one tightly unified scene, with at most two supporting motifs.",
+    "Avoid busy montages, split screens, collages, posters, newspaper pages, documents, charts with labels, or interface-like layouts.",
+  ].join(" ");
 
-  return `
-${base}
-Context keywords: ${kwLine || "—"}.
-${pickOne(cameraVariants)}.
-${pickOne(lightingVariants)}.
-${compositionRules}
-`.trim();
+  const craftBlock = [
+    `${stylePreset}.`,
+    "Cinematic soft lighting, refined material contrast, elegant depth, premium finish, crisp detail, clean hierarchy, restrained palette, sophisticated atmosphere.",
+    `Build the scene around ${hero}; secondary motifs may suggest ${supportA} and ${supportB}; optional subtle background cue for ${supportC}.`,
+    `Context keywords: ${contextLine}.`,
+  ].join(" ");
+
+  const hardBanBlock = [
+    "Absolutely no readable text of any kind.",
+    "No Hangul, no Korean letters, no English letters, no words, no numbers, no typography, no subtitles, no captions, no signage, no labels.",
+    "No logo, no watermark, no UI, no infographic labels, no newspaper layout, no poster, no magazine cover, no screenshot feel.",
+    "No clutter, no low-detail chaos, no deformed objects, no overstuffed symbolism.",
+  ].join(" ");
+
+  return [subjectInstruction, compositionBlock, craftBlock, hardBanBlock].join("\n");
 };
-
 
 const sanitizeCardHeadline = (text: string, fallback = "핵심 이슈 요약") => {
   const cleaned = cleanHeadline(text)
@@ -480,7 +496,7 @@ const ContentExpander: React.FC<Props> = ({
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const qualitySuffix =
-    ", ultra high resolution, premium, photorealistic, high clarity, sharp focus, clean details, cinematic lighting, HDR, professional photography, minimal composition";
+    ", ultra high resolution, premium editorial quality, crisp details, clean material rendering, polished finish, cinematic soft lighting, elegant depth, restrained palette, balanced negative space, one coherent hero scene, strong focal point, cover-safe vertical composition, no clutter, text-free image, no readable text, no Hangul, no Korean letters, no English letters, no words, no numbers, no logo, no watermark, no newspaper, no poster, no magazine cover, no subtitle, no caption, no signage, no UI";
 
   const enterpriseContext = useMemo(() => {
     const k = (keyword || "").trim();
@@ -808,7 +824,7 @@ const deleteFavorite = (id: string) => {
       // 2) 이미지 생성
       const stylePrompt = isAutoMode ? "" : (IMAGE_STYLES.find((s) => s.id === selectedStyleId)?.prompt || "");
       const enhancedStylePrompt = `${stylePrompt}${qualitySuffix}`;
-      const imgContext = buildEnhancedImagePrompt(newTitle, baseContext, manual);
+      const imgContext = buildEnhancedImagePrompt(newTitle, baseContext, manual, stylePrompt);
 
       // ✅ (결과) AI가 실제로 사용한 최종 프롬프트를 저장 (읽기 전용 표시)
       setAiFinalImagePrompt(`IMAGE_PROMPT:\n${imgContext}\n\nSTYLE_PROMPT:\n${enhancedStylePrompt}`);
@@ -855,7 +871,8 @@ const deleteFavorite = (id: string) => {
       const variationPrompt = buildEnhancedImagePrompt(
         expandedData.image.cardData.title,
         baseContext,
-        manual
+        manual,
+        stylePrompt
       );
 
       // ✅ (결과) AI가 실제로 사용한 최종 프롬프트를 저장 (읽기 전용 표시)
