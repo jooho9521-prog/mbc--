@@ -33,6 +33,7 @@ export interface GmailNewsItem {
    * - ISO string (e.g. 2026-02-27T10:11:12.000Z)
    */
   publishedAt?: string;
+  gmailReceivedAt?: string;
   articlePublishedAt?: string;
 
   /** 내부 계산용 (ms) */
@@ -164,6 +165,7 @@ export const getNewsEmails = (opts?: {
   keywordHint?: string;
   targetDate?: string;
   targetDates?: string[];
+  balanceMode?: "off" | "ideology-mix";
 }): Promise<GmailNewsItem[]> => {
   return new Promise((resolve, reject) => {
     if (!tokenClient)
@@ -195,6 +197,7 @@ export const getNewsEmails = (opts?: {
     const sortBy = opts?.sortBy ?? "hybrid";
     const keywordHint = (opts?.keywordHint ?? keywordHintFromContext(labelName)).trim();
     const requestedDates = normalizeTargetDates(opts?.targetDate, opts?.targetDates);
+    const balanceMode = opts?.balanceMode ?? "ideology-mix";
 
     tokenClient.callback = async (resp: any) => {
       if (resp?.error !== undefined) {
@@ -271,8 +274,12 @@ export const getNewsEmails = (opts?: {
 
         // ✅ 정렬 업그레이드
         const sorted = sortItems(enriched, sortBy, config.recencyWeight);
+        const balanced =
+          balanceMode === "ideology-mix"
+            ? rebalanceNewsItems(sorted, maxItemsToReturn)
+            : sorted.slice(0, maxItemsToReturn);
 
-        const result = sorted.slice(0, maxItemsToReturn);
+        const result = balanced.slice(0, maxItemsToReturn);
 
         if (excludeSeen) markSeen(result, config.seenTtlDays);
 
@@ -567,8 +574,9 @@ function extractArticlesFromEmail(args: {
 
         const source = safeHostname(url) || "웹 뉴스";
 
-        // ✅ NEW: publishedAt 추정(본문 날짜 패턴 우선, 없으면 messageDateIso)
-        const publishedAt = inferPublishedAt(snippet, decodedText, messageDateIso);
+        // ✅ Gmail 소스피드 날짜는 수신일 기준으로 유지, 기사 날짜는 별도 보관
+        const publishedAt = messageDateIso;
+        const articlePublishedAt = inferPublishedAt(snippet, decodedText, messageDateIso);
 
         out.push({
           title: titleCandidate,
@@ -576,6 +584,8 @@ function extractArticlesFromEmail(args: {
           source,
           body: buildBodyForAI(snippet, decodedText, snippetMaxLen),
           publishedAt,
+          gmailReceivedAt: messageDateIso,
+          articlePublishedAt,
         });
 
         found = true;
@@ -601,7 +611,9 @@ function extractArticlesFromEmail(args: {
         link: u,
         source: safeHostname(u) || "웹 뉴스",
         body: decodedText.substring(0, snippetMaxLen),
-        publishedAt: inferPublishedAt("", decodedText, messageDateIso),
+        publishedAt: messageDateIso,
+        gmailReceivedAt: messageDateIso,
+        articlePublishedAt: inferPublishedAt("", decodedText, messageDateIso),
       });
     }
     found = out.length > 0;
@@ -614,6 +626,7 @@ function extractArticlesFromEmail(args: {
       source: "Gmail 원문",
       body: decodedText.substring(0, snippetMaxLen),
       publishedAt: messageDateIso,
+      gmailReceivedAt: messageDateIso,
     });
   }
 
@@ -818,6 +831,7 @@ function normalizeItem(item: GmailNewsItem): GmailNewsItem {
 
   // publishedAt / articlePublishedAt 도 ISO로 정규화
   const publishedAt = item.publishedAt ? toIsoSafe(item.publishedAt) : undefined;
+  const gmailReceivedAt = item.gmailReceivedAt ? toIsoSafe(item.gmailReceivedAt) : undefined;
   const articlePublishedAt = item.articlePublishedAt
     ? toIsoSafe(item.articlePublishedAt)
     : undefined;
@@ -829,6 +843,7 @@ function normalizeItem(item: GmailNewsItem): GmailNewsItem {
     title: cleanInlineText(item.title || ""),
     body: cleanInlineText(item.body || ""),
     publishedAt: publishedAt || item.publishedAt,
+    gmailReceivedAt: gmailReceivedAt || publishedAt || item.gmailReceivedAt || item.publishedAt,
     articlePublishedAt: articlePublishedAt || item.articlePublishedAt,
   };
 }
@@ -1228,6 +1243,221 @@ function sortItems(
 function stripInternal(it: GmailNewsItem): GmailNewsItem {
   const { _ts, ...rest } = it as any;
   return rest as GmailNewsItem;
+}
+
+type OutletBucket =
+  | "global"
+  | "kr-progressive"
+  | "kr-conservative"
+  | "kr-neutral"
+  | "other";
+
+function classifyOutlet(hostOrSource: string): { bucket: OutletBucket; publisher: string } {
+  const host = String(hostOrSource || "")
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .trim();
+
+  const match = (domains: string[]) =>
+    domains.find((d) => host === d || host.endsWith(`.${d}`));
+
+  const globalDomains = [
+    "reuters.com",
+    "apnews.com",
+    "bloomberg.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "cnn.com",
+    "nytimes.com",
+    "theguardian.com",
+    "wsj.com",
+    "ft.com",
+    "economist.com",
+  ];
+  const krProgressiveDomains = ["hani.co.kr", "khan.co.kr", "ohmynews.com"];
+  const krConservativeDomains = ["chosun.com", "joongang.co.kr", "donga.com"];
+  const krNeutralDomains = [
+    "hankookilbo.com",
+    "hankookilbo.co.kr",
+    "seoul.co.kr",
+    "yna.co.kr",
+    "yonhapnews.co.kr",
+    "ytn.co.kr",
+    "kbs.co.kr",
+    "kbsnews.co.kr",
+    "imbc.com",
+    "mbc.co.kr",
+    "sbs.co.kr",
+    "news1.kr",
+  ];
+
+  const globalMatch = match(globalDomains);
+  if (globalMatch) return { bucket: "global", publisher: publisherAlias(globalMatch) };
+
+  const progMatch = match(krProgressiveDomains);
+  if (progMatch) return { bucket: "kr-progressive", publisher: publisherAlias(progMatch) };
+
+  const consMatch = match(krConservativeDomains);
+  if (consMatch) return { bucket: "kr-conservative", publisher: publisherAlias(consMatch) };
+
+  const neutralMatch = match(krNeutralDomains);
+  if (neutralMatch) return { bucket: "kr-neutral", publisher: publisherAlias(neutralMatch) };
+
+  return { bucket: "other", publisher: publisherAlias(host || "unknown") };
+}
+
+function publisherAlias(domain: string) {
+  const map: Record<string, string> = {
+    "reuters.com": "Reuters",
+    "apnews.com": "AP",
+    "bloomberg.com": "Bloomberg",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
+    "cnn.com": "CNN",
+    "nytimes.com": "NYTimes",
+    "theguardian.com": "Guardian",
+    "wsj.com": "WSJ",
+    "ft.com": "FT",
+    "economist.com": "Economist",
+    "hani.co.kr": "한겨레",
+    "khan.co.kr": "경향신문",
+    "ohmynews.com": "오마이뉴스",
+    "chosun.com": "조선일보",
+    "joongang.co.kr": "중앙일보",
+    "donga.com": "동아일보",
+    "hankookilbo.com": "한국일보",
+    "hankookilbo.co.kr": "한국일보",
+    "seoul.co.kr": "서울신문",
+    "yna.co.kr": "연합뉴스",
+    "yonhapnews.co.kr": "연합뉴스",
+    "ytn.co.kr": "YTN",
+    "kbs.co.kr": "KBS",
+    "kbsnews.co.kr": "KBS",
+    "imbc.com": "MBC",
+    "mbc.co.kr": "MBC",
+    "sbs.co.kr": "SBS",
+    "news1.kr": "뉴스1",
+  };
+  return map[domain] || domain.replace(/^www\./, "");
+}
+
+function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
+  const list = Array.isArray(items) ? [...items] : [];
+  if (!list.length) return list;
+
+  const byBucket: Record<OutletBucket, GmailNewsItem[]> = {
+    global: [],
+    "kr-progressive": [],
+    "kr-conservative": [],
+    "kr-neutral": [],
+    other: [],
+  };
+
+  for (const item of list) {
+    const host = safeHostname(item.link) || item.source || "";
+    const { bucket } = classifyOutlet(host);
+    byBucket[bucket].push(item);
+  }
+
+  const selected: GmailNewsItem[] = [];
+  const selectedKeys = new Set<string>();
+  const publisherCounts = new Map<string, number>();
+
+  const tryPickFromBucket = (bucket: OutletBucket) => {
+    const queue = byBucket[bucket] || [];
+    if (!queue.length) return null;
+
+    const pick = (allowRepeatPublisher: boolean) => {
+      for (const item of queue) {
+        const key = String(item.link || item.title || "").trim();
+        if (!key || selectedKeys.has(key)) continue;
+
+        const host = safeHostname(item.link) || item.source || "";
+        const { publisher } = classifyOutlet(host);
+        const publisherCount = publisherCounts.get(publisher) || 0;
+
+        if (publisherCount >= 2) continue;
+        if (!allowRepeatPublisher && publisherCount >= 1) continue;
+
+        return item;
+      }
+      return null;
+    };
+
+    return pick(false) || pick(true);
+  };
+
+  const commit = (item: GmailNewsItem | null) => {
+    if (!item) return false;
+
+    const key = String(item.link || item.title || "").trim();
+    if (!key || selectedKeys.has(key)) return false;
+
+    const host = safeHostname(item.link) || item.source || "";
+    const { publisher } = classifyOutlet(host);
+    const publisherCount = publisherCounts.get(publisher) || 0;
+
+    if (publisherCount >= 2) return false;
+
+    publisherCounts.set(publisher, publisherCount + 1);
+    selectedKeys.add(key);
+    selected.push(item);
+    return true;
+  };
+
+  const primarySequence: OutletBucket[] = [
+    "global",
+    "kr-progressive",
+    "kr-progressive",
+    "kr-conservative",
+    "kr-conservative",
+  ];
+
+  for (const bucket of primarySequence) {
+    if (selected.length >= maxItems) break;
+    commit(tryPickFromBucket(bucket));
+  }
+
+  const fillSequence: OutletBucket[] = [
+    "kr-neutral",
+    "global",
+    "kr-progressive",
+    "kr-conservative",
+    "other",
+  ];
+
+  while (selected.length < maxItems) {
+    let added = false;
+
+    for (const bucket of fillSequence) {
+      if (selected.length >= maxItems) break;
+      const picked = tryPickFromBucket(bucket);
+      if (commit(picked)) added = true;
+    }
+
+    if (!added) break;
+  }
+
+  if (selected.length < maxItems) {
+    for (const item of list) {
+      if (selected.length >= maxItems) break;
+
+      const key = String(item.link || item.title || "").trim();
+      if (!key || selectedKeys.has(key)) continue;
+
+      const host = safeHostname(item.link) || item.source || "";
+      const { publisher } = classifyOutlet(host);
+      const publisherCount = publisherCounts.get(publisher) || 0;
+      if (publisherCount >= 2) continue;
+
+      publisherCounts.set(publisher, publisherCount + 1);
+      selectedKeys.add(key);
+      selected.push(item);
+    }
+  }
+
+  return selected;
 }
 
 /** -----------------------------

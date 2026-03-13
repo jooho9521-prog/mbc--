@@ -846,6 +846,7 @@ const App: React.FC = () => {
         targetDate: finalDates.length === 1 ? finalDates[0] : undefined,
         targetDates: finalDates.length > 1 ? finalDates : undefined,
         sortBy: newsSort === "latest" ? "recent" : "score",
+        balanceMode: "ideology-mix",
       })) as any[];
 
       if (!emailData || emailData.length === 0) {
@@ -859,12 +860,18 @@ const App: React.FC = () => {
 
       showToast("가져온 뉴스를 분석하는 중...");
       const service = new GeminiTrendService();
+      const analysisInputItems = (emailData || []).slice(0, Math.min(8, emailData.length));
 
-      const combinedEmailText = (emailData || [])
+      const combinedEmailText = (analysisInputItems || [])
         .map((e: any, index: number) => {
+          const gmailReceivedAt = e.gmailReceivedAt || e.publishedAt || e.date || "";
+          const articlePublishedAt = e.articlePublishedAt || "";
+
           return `[기사 ${index + 1}]
 제목: ${e.title}
 출처: ${e.source}
+Gmail 수신일: ${gmailReceivedAt || "미확인"}
+기사 원문 날짜: ${articlePublishedAt || "미확인"}
 내용: ${e.body}`;
         })
         .join("\n\n");
@@ -874,19 +881,25 @@ const App: React.FC = () => {
 다음은 사용자의 구글 알림(뉴스레터)에서 추출한 실제 최신 뉴스 기사 모음입니다.
 이 기사들을 종합적으로 분석하여 핵심 트렌드 보고서를 작성해주세요.
 
-**중요: 분석 결과에 어떤 언론사(출처)의 기사인지 반드시 언급해주세요.**
+중요 지침:
+1. 분석 결과는 반드시 한국어로 작성하세요.
+2. 소스피드 날짜 기준은 Gmail 수신일입니다.
+3. 기사 원문 날짜가 있으면 분석 맥락용 보조 정보로만 활용하세요.
+4. 분석 결과에 어떤 언론사(출처)의 기사인지 반드시 언급해주세요.
+5. 가능한 한 특정 보수/진보/해외 언론 한 곳에 치우치지 말고, 입력 기사 안에서 해외 1건 이상, 진보 성향 2건 내외, 보수 성향 2건 내외가 반영된 균형 잡힌 관점으로 요약하세요.
+6. 같은 언론사의 기사만 반복 인용하지 말고, 서로 다른 언론사를 우선 사용하세요.
 
 [뉴스 기사 본문]
 ${combinedEmailText}
 `.trim();
 
       const evidenceArray = normalizeEvidenceArray(
-        (emailData || []).slice(0, 12).map((e: any) => ({
+        (analysisInputItems || []).slice(0, 12).map((e: any) => ({
           title: e.title || "G메일 기사",
           url: e.link || e.url || "https://mail.google.com/",
           source: e.source || "Gmail",
           snippet: String(e.body || "").slice(0, 280),
-          date: e.articlePublishedAt || e.publishedAt || e.date || "",
+          date: e.articlePublishedAt || e.gmailReceivedAt || e.publishedAt || e.date || "",
         })),
         12,
         { allowBlocked: true }
@@ -898,16 +911,23 @@ ${combinedEmailText}
         evidenceArray
       );
 
-      const mappedSources = (emailData || []).map((e: any, index: number) => ({
-        title: String(e.title || `G메일 기사 ${index + 1}`).trim() || `G메일 기사 ${index + 1}`,
-        uri: e.link || e.url || "https://mail.google.com/",
-        source: e.source || "웹 뉴스",
-        snippet: String(e.body || "").slice(0, 280),
-        date: e.articlePublishedAt || e.publishedAt || e.date || "",
-        ts: new Date(e.articlePublishedAt || e.publishedAt || e.date || "").getTime() || 0,
-        relevanceScore: typeof e.score === "number" ? e.score : 0,
-        originalRank: index,
-      })) as any[];
+      const mappedSources = (emailData || []).map((e: any, index: number) => {
+        const gmailReceivedAt = e.gmailReceivedAt || e.publishedAt || e.date || "";
+        const articlePublishedAt = e.articlePublishedAt || "";
+
+        return {
+          title: String(e.title || `G메일 기사 ${index + 1}`).trim() || `G메일 기사 ${index + 1}`,
+          uri: e.link || e.url || "https://mail.google.com/",
+          source: e.source || "웹 뉴스",
+          snippet: String(e.body || "").slice(0, 280),
+          date: gmailReceivedAt,
+          gmailReceivedAt,
+          articlePublishedAt,
+          ts: new Date(gmailReceivedAt || 0).getTime() || 0,
+          relevanceScore: typeof e.score === "number" ? e.score : 0,
+          originalRank: index,
+        };
+      }) as any[];
 
       const uniqueSources = sanitizeNewsItems(
         Array.from(new Map(mappedSources.map((item: any) => [item.uri, item])).values()) as any,
