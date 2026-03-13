@@ -272,52 +272,6 @@ const normalizeEvidenceArray = (
   return Array.from(map.values()).slice(0, max);
 };
 
-const buildFallbackTrendAnalysis = (items: any[] = [], keyword = "G메일 뉴스 요약") => {
-  const safeItems = Array.isArray(items) ? items.filter(Boolean).slice(0, 5) : [];
-  const topTitles = safeItems
-    .map((item, index) => `${index + 1}. ${String(item?.title || "관련 기사").trim()}`)
-    .filter(Boolean);
-
-  const citations = safeItems.map((item, index) => ({
-    point: index + 1,
-    title: String(item?.title || `관련 기사 ${index + 1}`).trim() || `관련 기사 ${index + 1}`,
-    url: String(item?.uri || item?.url || item?.link || "https://mail.google.com/").trim() || "https://mail.google.com/",
-    publisher: String(item?.source || "Gmail").trim() || "Gmail",
-  }));
-
-  const factChecks = safeItems.map((item, index) => ({
-    point: index + 1,
-    label: "fact" as const,
-    confidence: 72,
-    reason: `${String(item?.source || "출처 미상").trim() || "출처 미상"} 기사 기준 요약`,
-  }));
-
-  const keyPoints = topTitles.length
-    ? topTitles
-    : [
-        `${keyword} 관련 기사 요약을 불러왔습니다.`,
-        "AI 분석 응답이 지연되어 기사 원문 기준 임시 요약을 제공합니다.",
-      ];
-
-  const summary = safeItems.length
-    ? `Gmail 뉴스 요약 브리핑을 불러왔습니다. 현재 AI 상세 분석 응답이 지연되어 기사 제목과 출처를 기준으로 임시 요약을 표시합니다. ${safeItems
-        .map((item) => String(item?.source || "출처 미상").trim())
-        .filter(Boolean)
-        .slice(0, 5)
-        .join(", ")} 등의 기사 흐름을 먼저 확인할 수 있습니다.`
-    : "Gmail 뉴스 요약 브리핑을 불러왔지만, 상세 분석 생성 전 임시 요약만 제공됩니다.";
-
-  return {
-    summary,
-    sentiment: "neutral" as const,
-    keyPoints,
-    growthScore: 50,
-    confidenceScore: 68,
-    citations,
-    factChecks,
-  };
-};
-
 const PREFERRED_SOURCE_DOMAINS = [
   "hani.co.kr",
   "donga.com",
@@ -837,22 +791,6 @@ const App: React.FC = () => {
     setSelectedDates((prev) => prev.filter((d) => d !== normalized));
   }, [normalizeDateValue]);
 
-  const withTimeout = useCallback(async <T,>(promise: Promise<T>, ms: number, label: string) => {
-    let timer: number | undefined;
-
-    const timeoutPromise = new Promise<T>((_, reject) => {
-      timer = window.setTimeout(() => {
-        reject(new Error(`${label} 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.`));
-      }, ms);
-    });
-
-    try {
-      return await Promise.race([promise, timeoutPromise]);
-    } finally {
-      if (typeof timer === "number") window.clearTimeout(timer);
-    }
-  }, []);
-
   const handleGmailSummary = useCallback(async () => {
     let currentAuthStatus = isGoogleAuthReady;
 
@@ -904,12 +842,12 @@ const App: React.FC = () => {
         ])
       ).sort();
 
-      const emailData = (await withTimeout(getNewsEmails({
+      const emailData = (await getNewsEmails({
         targetDate: finalDates.length === 1 ? finalDates[0] : undefined,
         targetDates: finalDates.length > 1 ? finalDates : undefined,
         sortBy: newsSort === "latest" ? "recent" : "score",
         balanceMode: "ideology-mix",
-      }), 45000, "G메일 뉴스 불러오기")) as any[];
+      })) as any[];
 
       if (!emailData || emailData.length === 0) {
         const emptyLabel = finalDates.length
@@ -919,40 +857,6 @@ const App: React.FC = () => {
         setState((prev) => ({ ...prev, isLoading: false }));
         return;
       }
-
-      const mappedSources = (emailData || []).map((e: any, index: number) => {
-        const gmailReceivedAt = e.gmailReceivedAt || e.publishedAt || e.date || "";
-        const articlePublishedAt = e.articlePublishedAt || "";
-
-        return {
-          title: String(e.title || `G메일 기사 ${index + 1}`).trim() || `G메일 기사 ${index + 1}`,
-          uri: e.link || e.url || "https://mail.google.com/",
-          source: e.source || "웹 뉴스",
-          snippet: String(e.body || "").slice(0, 280),
-          date: gmailReceivedAt,
-          gmailReceivedAt,
-          articlePublishedAt,
-          ts: new Date(gmailReceivedAt || 0).getTime() || 0,
-          relevanceScore: typeof e.score === "number" ? e.score : 0,
-          originalRank: index,
-        };
-      }) as any[];
-
-      const uniqueSources = sanitizeNewsItems(
-        Array.from(new Map(mappedSources.map((item: any) => [item.uri, item])).values()) as any,
-        true
-      );
-
-      const fallbackAnalysis = buildFallbackTrendAnalysis(uniqueSources, "G메일 뉴스 요약");
-
-      setState((prev) => ({
-        ...prev,
-        results: uniqueSources,
-        analysis: fallbackAnalysis,
-        isLoading: true,
-        error: null,
-      }));
-      setNewsSources(uniqueSources);
 
       showToast("가져온 뉴스를 분석하는 중...");
       const service = new GeminiTrendService();
@@ -1001,35 +905,51 @@ ${combinedEmailText}
         { allowBlocked: true }
       );
 
-      const { analysis } = await withTimeout(
-        service.fetchTrendsAndAnalysisA(
-          "G메일 뉴스 요약",
-          finalPrompt,
-          evidenceArray
-        ),
-        90000,
-        "AI 분석"
+      const { analysis } = await service.fetchTrendsAndAnalysisA(
+        "G메일 뉴스 요약",
+        finalPrompt,
+        evidenceArray
+      );
+
+      const mappedSources = (emailData || []).map((e: any, index: number) => {
+        const gmailReceivedAt = e.gmailReceivedAt || e.publishedAt || e.date || "";
+        const articlePublishedAt = e.articlePublishedAt || "";
+
+        return {
+          title: String(e.title || `G메일 기사 ${index + 1}`).trim() || `G메일 기사 ${index + 1}`,
+          uri: e.link || e.url || "https://mail.google.com/",
+          source: e.source || "웹 뉴스",
+          snippet: String(e.body || "").slice(0, 280),
+          date: gmailReceivedAt,
+          gmailReceivedAt,
+          articlePublishedAt,
+          ts: new Date(gmailReceivedAt || 0).getTime() || 0,
+          relevanceScore: typeof e.score === "number" ? e.score : 0,
+          originalRank: index,
+        };
+      }) as any[];
+
+      const uniqueSources = sanitizeNewsItems(
+        Array.from(new Map(mappedSources.map((item: any) => [item.uri, item])).values()) as any,
+        true
       );
 
       setState((prev) => ({
         ...prev,
         results: uniqueSources,
-        analysis: analysis || fallbackAnalysis,
+        analysis,
         isLoading: false,
-        error: null,
       }));
       setNewsSources(uniqueSources);
     } catch (err: any) {
-      const hasResults = (newsSources || []).length > 0;
       setState((prev) => ({
         ...prev,
         isLoading: false,
-        error: hasResults ? null : (err?.message || "G메일 연동 또는 분석 중 오류가 발생했습니다."),
-        analysis: hasResults ? (prev.analysis || buildFallbackTrendAnalysis(prev.results as any[], "G메일 뉴스 요약")) : prev.analysis,
+        error: err?.message || "G메일 연동 또는 분석 중 오류가 발생했습니다.",
       }));
-      showToast(hasResults ? "AI 분석이 지연되어 기사 목록과 임시 요약을 먼저 표시합니다." : ("G메일 요약 실패: " + (err?.message || "오류")));
+      showToast("G메일 요약 실패: " + (err?.message || "오류"));
     }
-  }, [getGeminiRuntimeKey, isGoogleAuthReady, newsSort, selectedDates, selectedPersona.prompt, showToast, targetDate, withTimeout]);
+  }, [getGeminiRuntimeKey, isGoogleAuthReady, newsSort, selectedDates, selectedPersona.prompt, showToast, targetDate]);
 
   const handleModeChange = useCallback(
     (mode: (typeof ANALYSIS_MODES)[number]) => {
