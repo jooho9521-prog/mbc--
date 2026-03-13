@@ -149,9 +149,9 @@ const buildEnterprisePromptSuggestions = (seed: string, context: string) => {
     "absolutely no readable text, no Hangul, no Korean letters, no English letters, no words, no numbers, no captions, no subtitles, no signage, no labels, no newspaper layout, no poster layout, no magazine cover, no logo, no watermark, no UI, no screenshots, no collage, no clutter";
 
   return [
-    `Premium editorial 3D cover visual for “${s}”. One hero subject built around ${main}, supported by ${supportA} and ${supportB}. Vertical magazine-cover composition, upper-middle focal point, clean lower safe area for headline overlay, cinematic soft lighting, polished materials, restrained premium palette, elegant depth, highly refined details, ${noTextRules}.`,
+    `Premium editorial 3D cover visual for “${s}”. One hero subject built around ${main}, supported by ${supportA} and ${supportB}. Strict vertical editorial scene composition, upper-middle focal point, calm lower safe area reserved as empty visual space for later app layout, cinematic soft lighting, polished materials, restrained premium palette, elegant depth, highly refined details, ${noTextRules}.`,
     `Luxury institutional illustration for “${s}”. A single coherent symbolic scene featuring ${main}, subtle ${supportA} motifs, and controlled ${supportC} cues. Modern editorial style, balanced negative space, clean hierarchy, premium finish, volumetric light, crisp details, ${noTextRules}.`,
-    `High-end news briefing key visual for “${s}”. Refined metaphor centered on ${main} with two supporting elements: ${supportB} and ${supportC}. Vertical poster-safe composition, minimal clutter, sophisticated contrast, premium brand-campaign look, sharp clarity, ${noTextRules}.`,
+    `High-end news briefing key visual for “${s}”. Refined metaphor centered on ${main} with two supporting elements: ${supportB} and ${supportC}. Strict vertical editorial composition, minimal clutter, sophisticated contrast, premium institutional campaign look, sharp clarity, ${noTextRules}.`,
     `Minimal cinematic concept art for “${s}”. One central monument-like object expressing ${main}, with restrained environmental hints of ${supportA} and ${supportB}. Calm institutional mood, elegant gradients, strong depth, clean editorial composition, ${noTextRules}.`,
   ];
 };
@@ -189,11 +189,11 @@ const buildEnhancedImagePrompt = (
     : `Create one coherent hero scene about ${h || hero}.`;
 
   const compositionBlock = [
-    "Strict 9:16 vertical cover composition for a premium news briefing card.",
+    "Strict 9:16 vertical editorial-scene composition for a premium news image.",
     "Place one strong focal subject in the upper-middle area.",
-    "Keep the lower-middle area cleaner for headline overlay.",
+    "Keep the lower-middle and bottom area calmer as empty visual space only for later app overlay, not embedded image text.",
     "Use only one hero object or one tightly unified scene, with at most two supporting motifs.",
-    "Avoid busy montages, split screens, collages, posters, newspaper pages, documents, charts with labels, or interface-like layouts.",
+    "Avoid busy montages, split screens, collages, posters, newspaper pages, documents, charts with labels, interface-like layouts, or title-card tropes.",
   ].join(" ");
 
   const craftBlock = [
@@ -201,12 +201,16 @@ const buildEnhancedImagePrompt = (
     "Cinematic soft lighting, refined material contrast, elegant depth, premium finish, crisp detail, clean hierarchy, restrained palette, sophisticated atmosphere.",
     `Build the scene around ${hero}; secondary motifs may suggest ${supportA} and ${supportB}; optional subtle background cue for ${supportC}.`,
     `Context keywords: ${contextLine}.`,
+    "Prefer abstract structures, neutral objects, architecture, light, glass, metal, and environmental motifs instead of literal signage or title placeholders.",
+    "Avoid national symbols such as flags, bald eagles, coats of arms, patriotic emblems, or propaganda-style imagery.",
   ].join(" ");
 
   const hardBanBlock = [
     "Absolutely no readable text of any kind.",
     "No Hangul, no Korean letters, no English letters, no words, no numbers, no typography, no subtitles, no captions, no signage, no labels.",
     "No logo, no watermark, no UI, no infographic labels, no newspaper layout, no poster, no magazine cover, no screenshot feel.",
+    "Do not generate ghost text, blurred letters, pseudo-typography, title placeholders, headline bars, word-like textures, or watermark-like glyphs.",
+    "Treat all text-safe areas as empty visual space only.",
     "No clutter, no low-detail chaos, no deformed objects, no overstuffed symbolism.",
   ].join(" ");
 
@@ -496,7 +500,7 @@ const ContentExpander: React.FC<Props> = ({
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const qualitySuffix =
-    ", ultra high resolution, premium editorial quality, crisp details, clean material rendering, polished finish, cinematic soft lighting, elegant depth, restrained palette, balanced negative space, one coherent hero scene, strong focal point, cover-safe vertical composition, no clutter, text-free image, no readable text, no Hangul, no Korean letters, no English letters, no words, no numbers, no logo, no watermark, no newspaper, no poster, no magazine cover, no subtitle, no caption, no signage, no UI";
+    ", ultra high resolution, premium editorial quality, crisp details, clean material rendering, polished finish, cinematic soft lighting, elegant depth, restrained palette, balanced negative space, one coherent hero scene, strong focal point, calm vertical editorial composition, no clutter, text-free image, no readable text, no Hangul, no Korean letters, no English letters, no words, no numbers, no logo, no watermark, no newspaper, no poster, no magazine cover, no subtitle, no caption, no signage, no UI, no ghost text, no pseudo-typography, no headline placeholders, no patriotic symbols, no flags, no bald eagles";
 
   const enterpriseContext = useMemo(() => {
     const k = (keyword || "").trim();

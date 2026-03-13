@@ -145,8 +145,8 @@ const CardNewsGenerator: React.FC<Props> = ({
   const [headlineSize, setHeadlineSize] = useState(80);
   const [bodySize, setBodySize] = useState(35);
   const [selectedFont, setSelectedFont] = useState(DEFAULT_FONT);
-  const [backgroundBlur, setBackgroundBlur] = useState(8);
-  const [overlayOpacity, setOverlayOpacity] = useState(0.38);
+  const [backgroundBlur, setBackgroundBlur] = useState(14);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.56);
   const [textShadowBlur, setTextShadowBlur] = useState(18);
 
   const [bodyText, setBodyText] = useState("");
@@ -348,11 +348,26 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.fillStyle = topOverlay;
       ctx.fillRect(0, 0, cw, 860);
 
-      const bottomOverlay = ctx.createLinearGradient(0, ch - 560, 0, ch);
+      const bottomOverlay = ctx.createLinearGradient(0, ch - 620, 0, ch);
       bottomOverlay.addColorStop(0, "rgba(4,12,28,0)");
-      bottomOverlay.addColorStop(1, `rgba(4,12,28,${Math.min(0.9, overlayStrength + 0.26)})`);
+      bottomOverlay.addColorStop(0.35, `rgba(4,12,28,${Math.min(0.7, overlayStrength + 0.16)})`);
+      bottomOverlay.addColorStop(1, `rgba(4,12,28,${Math.min(0.96, overlayStrength + 0.34)})`);
       ctx.fillStyle = bottomOverlay;
-      ctx.fillRect(0, ch - 560, cw, 560);
+      ctx.fillRect(0, ch - 620, cw, 620);
+
+      const midOverlay = ctx.createRadialGradient(cw * 0.5, ch * 0.42, 80, cw * 0.5, ch * 0.42, cw * 0.52);
+      midOverlay.addColorStop(0, `rgba(4,12,28,${Math.min(0.12, overlayStrength * 0.2)})`);
+      midOverlay.addColorStop(0.55, `rgba(4,12,28,${Math.min(0.26, overlayStrength * 0.34)})`);
+      midOverlay.addColorStop(1, `rgba(4,12,28,${Math.min(0.44, overlayStrength * 0.56)})`);
+      ctx.fillStyle = midOverlay;
+      ctx.fillRect(0, 0, cw, ch);
+
+      const textMask = ctx.createLinearGradient(0, ch * 0.68, 0, ch);
+      textMask.addColorStop(0, "rgba(4,12,28,0)");
+      textMask.addColorStop(0.45, `rgba(4,12,28,${Math.min(0.48, overlayStrength * 0.72)})`);
+      textMask.addColorStop(1, `rgba(4,12,28,${Math.min(0.82, overlayStrength + 0.18)})`);
+      ctx.fillStyle = textMask;
+      ctx.fillRect(0, ch * 0.68, cw, ch * 0.32);
 
       ctx.fillStyle = "white";
       ctx.textAlign = "left";
@@ -433,12 +448,11 @@ const CardNewsGenerator: React.FC<Props> = ({
       ctx.shadowBlur = 0;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
-      ctx.font = `bold 28px ${selectedFont}`;
-      ctx.fillStyle = "rgba(255,255,255,0.72)";
-      ctx.fillText(localWatermark || "TrendPulse OSMU Intelligent Engine", startX, 1840);
-
-      ctx.textAlign = "right";
-      ctx.fillText(new Date().toLocaleDateString("ko-KR"), 1080 - startX, 1840);
+      if ((localWatermark || "").trim()) {
+        ctx.font = `bold 28px ${selectedFont}`;
+        ctx.fillStyle = "rgba(255,255,255,0.72)";
+        ctx.fillText(localWatermark.trim(), startX, 1840);
+      }
     };
 
     img.onload = () => render(img);
