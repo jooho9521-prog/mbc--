@@ -60,6 +60,38 @@ const cleanAndFormatText = (text: string) => {
     .trim();
 };
 
+const sanitizeSnsText = (text: string) => {
+  if (!text) return "";
+
+  const lines = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) =>
+      line
+        .replace(/^(헤드라인|제목|타이틀|본문|내용|해시태그|태그)\s*[:：-]\s*/i, "")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
+
+  const deduped: string[] = [];
+  for (const line of lines) {
+    if (!deduped.includes(line)) deduped.push(line);
+  }
+
+  return deduped.join("\n").trim();
+};
+
 const cleanHeadline = (text: string) => {
   if (!text) return "";
   let cleaned = text
@@ -913,13 +945,17 @@ const deleteFavorite = (id: string) => {
 - 2) 3~5줄 본문(가독성 줄바꿈)
 - 3) 해시태그 8~12개
 - URL/출처 링크 금지
+- 마크다운 문법 금지: ###, ##, #, **, __, >, -, *, 백틱, 번호 목록 금지
+- 코드블록, 제목 라벨(예: 헤드라인:, 본문:, 해시태그:) 금지
+- 출력은 복사해서 바로 게시 가능한 일반 텍스트만 작성
 
 [콘텐츠]
 ${summary}
 `.trim();
 
       const rawResponse = await generateExpandedContent(snsPrompt, "sns", "");
-      setExpandedData((prev) => ({ ...prev, sns: rawResponse }));
+      const cleanedResponse = sanitizeSnsText(rawResponse);
+      setExpandedData((prev) => ({ ...prev, sns: cleanedResponse }));
       onShowToast("✅ SNS 문구 생성 완료");
     } catch (e) {
       console.error(e);
@@ -1452,7 +1488,7 @@ ${summary}
                 {expandedData.sns}
                 <button
                   onClick={() => {
-                    navigator.clipboard.writeText(expandedData.sns || "");
+                    navigator.clipboard.writeText(sanitizeSnsText(expandedData.sns || ""));
                     onShowToast("✅ 복사 완료!");
                   }}
                   className="mt-8 w-full py-4 bg-gray-50 hover:bg-gray-100 text-gray-900 rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all"
