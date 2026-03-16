@@ -74,26 +74,6 @@ const cleanHeadline = (text: string) => {
   return cleaned;
 };
 
-const cleanSnsText = (text: string) => {
-  if (!text) return "";
-
-  return String(text)
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/`([^`]*)`/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/__(.*?)__/g, "$1")
-    .replace(/\*(.*?)\*/g, "$1")
-    .replace(/_(.*?)_/g, "$1")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*\d+\.\s+/gm, "")
-    .replace(/^\s*(해시태그|hashtags?)\s*[:：]\s*/gim, "")
-    .replace(/^\s*(헤드라인|headline|title|본문|body)\s*[:：]\s*/gim, "")
-    .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-};
 const STOPWORDS = new Set([
   // KR
   "관련","속보","단독","분석","전망","가능","논란","사실","이유","결과","기자","뉴스","기사","내용","이번","오늘","최근","지난","대한","에서","으로","그리고","있다","했다","한다","된다","하는","하며","부터","까지","등","및",
@@ -933,17 +913,13 @@ const deleteFavorite = (id: string) => {
 - 2) 3~5줄 본문(가독성 줄바꿈)
 - 3) 해시태그 8~12개
 - URL/출처 링크 금지
-- 마크다운 문법 절대 금지 (###, ##, #, 별표, 밑줄, 목록기호, 인용기호, 백틱 등 금지)
-- 굵게, 제목 기호, 목록 기호 없이 바로 복붙 가능한 일반 텍스트만 출력
-- '헤드라인:', '본문:', '해시태그:' 같은 라벨도 붙이지 말 것
 
 [콘텐츠]
 ${summary}
 `.trim();
 
       const rawResponse = await generateExpandedContent(snsPrompt, "sns", "");
-      const cleanedResponse = cleanSnsText(rawResponse);
-      setExpandedData((prev) => ({ ...prev, sns: cleanedResponse }));
+      setExpandedData((prev) => ({ ...prev, sns: rawResponse }));
       onShowToast("✅ SNS 문구 생성 완료");
     } catch (e) {
       console.error(e);
