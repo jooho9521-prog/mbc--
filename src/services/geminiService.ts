@@ -27,6 +27,52 @@ const getApiKey = () => {
   return key.trim();
 };
 
+
+export const sanitizeSnsOutput = (input: string) => {
+  const raw = String(input || "").replace(/\r\n/g, "\n");
+  if (!raw.trim()) return "";
+
+  let text = raw
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/^\s*>+\s*/gm, "")
+    .replace(/^\s*[-*•]+\s*/gm, "")
+    .replace(/^\s*\d+[.)]\s*/gm, "")
+    .replace(/^\s*(헤드라인|제목|본문|캡션|해시태그|hashtags?)\s*[:：-]\s*/gim, "")
+    .replace(/^\s*(기업용\s*PR\/?SNS\s*에디터|동아일보용\s*고급\s*AI\s*대화\s*어시스턴트|요청하신.*제안합니다\.?|사용자의\s*요청에\s*따라.*)$/gim, "")
+    .replace(/^\s*(전략적\s*배경\s*및\s*맥락\s*분석|질문\s*의도\s*및\s*배경|커뮤니케이션\s*전략|잠재적\s*리스크\s*및\s*대응)\s*$/gim, "")
+    .replace(/^\s*[\-–—]{3,}\s*$/gm, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const cleaned: string[] = [];
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (
+      lower.includes("ai 대화 어시스턴트") ||
+      lower.includes("요청하신") ||
+      lower.includes("전략적 배경") ||
+      lower.includes("질문 의도 및 배경") ||
+      lower.includes("커뮤니케이션 전략") ||
+      lower.includes("잠재적 리스크")
+    ) {
+      continue;
+    }
+    cleaned.push(line);
+  }
+
+  text = cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return text;
+};
+
 /**
  * ✅ SDK 응답에서 payload(text/object)를 안전하게 추출합니다.
  * - response.text가 string 또는 object(JSON)인 케이스 모두 처리
@@ -987,21 +1033,22 @@ ${stylePrompt || "깔끔하고 고급스러운 카드뉴스 스타일"}
 
         if (normalizedType === "sns") {
           return `
-당신은 동아일보용 기업 PR/SNS 카피라이터입니다.
-아래 입력을 바탕으로 한국어 SNS/블로그 게시 문구를 작성하세요.
+당신은 기업용 PR/SNS 카피 에디터입니다.
+아래 내용을 바탕으로 바로 게시 가능한 SNS 문구만 한국어로 작성하세요.
 
-[사용자 요청/대화 컨텍스트]
+[원문 요약]
 ${String(summary || "").trim()}
 
-[응답 규칙]
-1. 반드시 한국어로 작성하세요.
-2. 출력은 복사해서 바로 게시 가능한 일반 텍스트만 작성하세요.
-3. 마크다운 문법 금지: ###, ##, #, **, __, >, -, *, 백틱, 코드블록, 번호 목록 금지.
-4. 라벨 금지: 헤드라인:, 제목:, 본문:, 해시태그: 같은 표기 금지.
-5. 링크, URL, 출처 링크, HTML 태그 금지.
-6. 첫 줄은 한 줄 헤드라인, 이후 3~5줄 본문, 마지막은 해시태그 8~12개로 구성하세요.
-7. 문장은 간결하고 신뢰감 있게 작성하고 과장, 구어체, 과도한 감탄 표현은 피하세요.
-8. 불필요한 빈 줄, 중복 문장, 장식 기호 없이 자연스럽게 작성하세요.
+[반드시 지킬 규칙]
+1. 결과 본문만 출력하세요. 서론, 설명, 배경분석, 질문 해설, 메타 코멘트 금지.
+2. 마크다운 금지: ###, ##, #, **, __, >, -, *, 백틱, 번호목록 금지.
+3. 라벨 금지: 제목:, 본문:, 해시태그:, 헤드라인:, 캡션: 같은 표시 금지.
+4. 링크, URL, 출처, 이모지, 불필요한 따옴표 금지.
+5. 첫 줄은 짧은 한 줄 헤드라인.
+6. 다음 3~5줄은 자연스러운 본문.
+7. 마지막 줄만 해시태그 6~10개를 한 줄로 작성.
+8. 기업 홍보 문구처럼 과장하지 말고, 신뢰감 있는 톤으로 작성하세요.
+9. 반드시 출력은 최종 SNS 게시 문안만 작성하세요.
           `.trim();
         }
 
@@ -1110,7 +1157,9 @@ ${stylePrompt}
       });
 
       const payload = getResponsePayload(response);
-      if (typeof payload === "string") return payload;
+      if (typeof payload === "string") {
+        return normalizedType === "sns" ? sanitizeSnsOutput(payload) : payload;
+      }
       try {
         return JSON.stringify(payload);
       } catch {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { generateExpandedContent, generateTTS } from "../services/geminiService";
+import { generateExpandedContent, generateTTS, sanitizeSnsOutput } from "../services/geminiService";
 import { generateImage } from "../services/imageService";
 import CardNewsGenerator from "./CardNewsGenerator";
 import {
@@ -58,38 +58,6 @@ const cleanAndFormatText = (text: string) => {
     .replace(/\*\*/g, "")
     .replace(/###/g, "")
     .trim();
-};
-
-const sanitizeSnsText = (text: string) => {
-  if (!text) return "";
-
-  const lines = text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/__(.*?)__/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/^\s*[-*•]\s+/gm, "")
-    .replace(/^\s*\d+[.)]\s+/gm, "")
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) =>
-      line
-        .replace(/^(헤드라인|제목|타이틀|본문|내용|해시태그|태그)\s*[:：-]\s*/i, "")
-        .replace(/\s{2,}/g, " ")
-        .trim()
-    )
-    .filter(Boolean);
-
-  const deduped: string[] = [];
-  for (const line of lines) {
-    if (!deduped.includes(line)) deduped.push(line);
-  }
-
-  return deduped.join("\n").trim();
 };
 
 const cleanHeadline = (text: string) => {
@@ -937,24 +905,24 @@ const deleteFavorite = (id: string) => {
     setLoading(true);
     try {
       const snsPrompt = `
-당신은 기업용 PR/SNS 에디터입니다.
-아래 내용을 기반으로 인스타그램/블로그용 문구를 한국어로 작성하세요.
-- 구어체/과장 표현 금지 (예: "~있습니다", "~해요" 금지)
-- 문장 간결, 브랜드 톤(중립/신뢰)
-- 1) 한 줄 헤드라인
-- 2) 3~5줄 본문(가독성 줄바꿈)
-- 3) 해시태그 8~12개
-- URL/출처 링크 금지
-- 마크다운 문법 금지: ###, ##, #, **, __, >, -, *, 백틱, 번호 목록 금지
-- 코드블록, 제목 라벨(예: 헤드라인:, 본문:, 해시태그:) 금지
-- 출력은 복사해서 바로 게시 가능한 일반 텍스트만 작성
+기업용 SNS 게시 문안을 작성하세요.
 
 [콘텐츠]
 ${summary}
+
+[출력 규칙]
+- 결과 문안만 작성
+- ###, ##, #, **, __, >, -, *, 백틱, 번호목록 금지
+- 제목:, 본문:, 해시태그:, 헤드라인: 같은 라벨 금지
+- 배경 설명, 전략 해설, 질문 분석, AI 소개 문구 금지
+- 첫 줄: 짧은 헤드라인 1줄
+- 다음 3~5줄: 자연스러운 본문
+- 마지막 1줄: 해시태그 6~10개
+- 링크/URL/출처 금지
 `.trim();
 
       const rawResponse = await generateExpandedContent(snsPrompt, "sns", "");
-      const cleanedResponse = sanitizeSnsText(rawResponse);
+      const cleanedResponse = sanitizeSnsOutput(rawResponse || "");
       setExpandedData((prev) => ({ ...prev, sns: cleanedResponse }));
       onShowToast("✅ SNS 문구 생성 완료");
     } catch (e) {
@@ -1485,10 +1453,10 @@ ${summary}
 
             {expandedData.sns ? (
               <div className="bg-gray-50 p-6 rounded-2xl text-left text-sm text-gray-700 whitespace-pre-line">
-                {expandedData.sns}
+                {sanitizeSnsOutput(expandedData.sns || "")}
                 <button
                   onClick={() => {
-                    navigator.clipboard.writeText(sanitizeSnsText(expandedData.sns || ""));
+                    navigator.clipboard.writeText(sanitizeSnsOutput(expandedData.sns || ""));
                     onShowToast("✅ 복사 완료!");
                   }}
                   className="mt-8 w-full py-4 bg-gray-50 hover:bg-gray-100 text-gray-900 rounded-2xl text-[11px] font-bold uppercase tracking-widest transition-all"

@@ -330,31 +330,21 @@ async function listMessageIds(
     return messages.map((m: any) => m.id).filter(Boolean);
   }
 
-  const collectedIds = new Set<string>();
-  const perDateLimit = Math.max(1, Math.min(maxMessagesToRead, 50));
+  const fetchLimit = Math.max(20, Math.min(maxMessagesToRead * Math.max(3, requestedDates.length * 4), 100));
+  const params: Record<string, any> = {
+    userId: "me",
+    q: fallbackQuery,
+    maxResults: fetchLimit,
+  };
 
-  for (const normalizedDate of requestedDates) {
-    const dayQuery = buildSingleDayQuery(fallbackQuery, normalizedDate);
-
-    const params: Record<string, any> = {
-      userId: "me",
-      q: dayQuery,
-      maxResults: perDateLimit,
-    };
-
-    if (labelId) {
-      params.labelIds = [labelId];
-    }
-
-    const res = await gapi.client.gmail.users.messages.list(params);
-    const messages = res?.result?.messages || [];
-
-    for (const message of messages) {
-      if (message?.id) collectedIds.add(message.id);
-    }
+  if (labelId) {
+    params.labelIds = [labelId];
   }
 
-  return Array.from(collectedIds).slice(0, maxMessagesToRead * requestedDates.length);
+  const res = await gapi.client.gmail.users.messages.list(params);
+  const messages = res?.result?.messages || [];
+  const ids = messages.map((m: any) => m?.id).filter(Boolean);
+  return await filterMessageIdsByRequestedDates(gapi, ids, requestedDates, maxMessagesToRead);
 }
 
 /**
@@ -403,6 +393,62 @@ function normalizeDateInput(input?: string) {
     2,
     "0"
   )}-${String(day).padStart(2, "0")}`;
+}
+
+
+function toSeoulDateKey(input?: string) {
+  const iso = toIsoSafe(String(input || ""));
+  if (!iso) return "";
+  try {
+    const formatter = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(new Date(iso));
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+async function filterMessageIdsByRequestedDates(
+  gapi: any,
+  messageIds: string[],
+  requestedDates: string[],
+  maxMessagesToRead: number
+): Promise<string[]> {
+  if (!requestedDates.length) return messageIds.slice(0, maxMessagesToRead);
+
+  const wanted = new Set(requestedDates.map((d) => normalizeDateInput(d)).filter(Boolean));
+  if (!wanted.size) return messageIds.slice(0, maxMessagesToRead);
+
+  const filtered: string[] = [];
+  for (const id of messageIds) {
+    try {
+      const meta = await gapi.client.gmail.users.messages.get({
+        userId: "me",
+        id,
+        format: "metadata",
+        metadataHeaders: ["Date"],
+      });
+      const payload = meta?.result?.payload;
+      const headers = payload?.headers || [];
+      const rawDate = headers.find((h: any) => h?.name === "Date")?.value || "";
+      const internalDate = meta?.result?.internalDate
+        ? new Date(Number(meta.result.internalDate)).toISOString()
+        : "";
+      const dateKey = toSeoulDateKey(rawDate) || toSeoulDateKey(internalDate);
+      if (dateKey && wanted.has(dateKey)) {
+        filtered.push(id);
+        if (filtered.length >= maxMessagesToRead * Math.max(1, wanted.size)) break;
+      }
+    } catch {
+      // ignore per-message metadata failures
+    }
+  }
+
+  return filtered;
 }
 
 /**
@@ -1010,11 +1056,21 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
 
 const ARTICLE_DATE_API_PATH = "/api/article-date";
 
+function shouldUseArticleDateApi() {
+  try {
+    const host = window.location.hostname || "";
+    if (host.includes("run.app")) return false;
+  } catch {}
+  return true;
+}
+
 async function fetchArticlePublishedAt(url: string): Promise<string> {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) return "";
 
   try {
+    if (!shouldUseArticleDateApi()) return "";
+
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 7000);
 
