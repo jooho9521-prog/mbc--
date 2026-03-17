@@ -34,7 +34,7 @@ export const sanitizeSnsOutput = (input: string) => {
 
   let text = raw
     .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s{0,3}#{1,6}\s+(?=\S)/gm, "")
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
     .replace(/^\s*>+\s*/gm, "")

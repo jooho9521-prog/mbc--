@@ -353,6 +353,81 @@ const getNewsRelevanceScore = (item: Partial<NewsItem>, keyword: string, analysi
   );
 };
 
+
+const SOURCE_BUCKET_ORDER = ["global", "kr-progressive", "kr-conservative", "kr-neutral", "other"] as const;
+type SourceBucket = typeof SOURCE_BUCKET_ORDER[number];
+
+const classifySourceBucket = (item: Partial<NewsItem>): SourceBucket => {
+  const host = getNewsHost(item);
+  const match = (domains: string[]) => domains.some((d) => host === d || host.endsWith(`.${d}`));
+
+  if (match(["reuters.com","apnews.com","bloomberg.com","bbc.com","bbc.co.uk","cnn.com","nytimes.com","theguardian.com","wsj.com","ft.com","economist.com","cnbc.com"])) {
+    return "global";
+  }
+  if (match(["hani.co.kr","khan.co.kr","ohmynews.com"])) {
+    return "kr-progressive";
+  }
+  if (match(["chosun.com","joongang.co.kr","donga.com","mk.co.kr","hankyung.com"])) {
+    return "kr-conservative";
+  }
+  if (match(["hankookilbo.com","hankookilbo.co.kr","seoul.co.kr","yna.co.kr","yonhapnews.co.kr","ytn.co.kr","kbs.co.kr","kbsnews.co.kr","imbc.com","mbc.co.kr","sbs.co.kr","newsis.com"])) {
+    return "kr-neutral";
+  }
+  return "other";
+};
+
+const diversifySourceFeed = (items: any[], limit?: number) => {
+  const target = typeof limit === "number" ? Math.max(1, limit) : items.length;
+  const remaining = [...items];
+  const selected: any[] = [];
+  const hostCounts = new Map<string, number>();
+
+  const caps: Record<SourceBucket, number> = {
+    global: 2,
+    "kr-progressive": 2,
+    "kr-conservative": 2,
+    "kr-neutral": 2,
+    other: 1,
+  };
+
+  const pick = (predicate: (item: any) => boolean) => {
+    const idx = remaining.findIndex((item) => {
+      if (!predicate(item)) return false;
+      const host = getNewsHost(item);
+      if (!host) return false;
+      return (hostCounts.get(host) || 0) < 2;
+    });
+    if (idx === -1) return false;
+    const [chosen] = remaining.splice(idx, 1);
+    const host = getNewsHost(chosen);
+    hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
+    selected.push(chosen);
+    return true;
+  };
+
+  for (const bucket of SOURCE_BUCKET_ORDER) {
+    if (selected.length >= target) break;
+    pick((item) => classifySourceBucket(item) === bucket);
+  }
+
+  while (selected.length < target && remaining.length) {
+    let added = false;
+    for (const bucket of SOURCE_BUCKET_ORDER) {
+      const bucketCount = selected.filter((item) => classifySourceBucket(item) === bucket).length;
+      if (bucketCount >= caps[bucket]) continue;
+      if (pick((item) => classifySourceBucket(item) === bucket)) {
+        added = true;
+        if (selected.length >= target) break;
+      }
+    }
+    if (!added) {
+      if (!pick(() => true)) break;
+    }
+  }
+
+  return selected.concat(remaining).slice(0, target);
+};
+
 const sanitizeNewsItems = (items: NewsItem[], allowBlocked = false): NewsItem[] => {
   const dedup = new Map<string, NewsItem>();
 
@@ -847,6 +922,7 @@ const App: React.FC = () => {
         targetDates: finalDates.length > 1 ? finalDates : undefined,
         sortBy: newsSort === "latest" ? "recent" : "score",
         balanceMode: "ideology-mix",
+        maxMessagesToRead: 25,
       })) as any[];
 
       if (!emailData || emailData.length === 0) {
@@ -1283,9 +1359,9 @@ ${currentContent}
       });
     }
 
-    return items.sort((a: any, b: any) => {
-      const ar = getNewsRelevanceScore(a, state.keyword, state.analysis);
-      const br = getNewsRelevanceScore(b, state.keyword, state.analysis);
+    const ranked = items.sort((a: any, b: any) => {
+      const ar = typeof a?.relevanceScore === "number" ? a.relevanceScore : getNewsRelevanceScore(a, state.keyword, state.analysis);
+      const br = typeof b?.relevanceScore === "number" ? b.relevanceScore : getNewsRelevanceScore(b, state.keyword, state.analysis);
 
       if (br !== ar) return br - ar;
 
@@ -1295,6 +1371,8 @@ ${currentContent}
 
       return a.__originalIndex - b.__originalIndex;
     });
+
+    return diversifySourceFeed(ranked);
   }, [newsSources, newsSort, state.keyword, state.analysis]);
 
   const handleCopyEvidence = useCallback(async () => {

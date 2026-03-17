@@ -93,7 +93,7 @@ const DEFAULT_CONFIG = {
   preferredLabelName: "뉴스요약",
   fallbackQuery:
     'newer_than:14d (from:googlealerts-noreply@google.com OR from:googlealerts-noreply OR subject:"Google 알림" OR subject:"Google Alerts")',
-  maxMessagesToRead: 8,
+  maxMessagesToRead: 25,
   maxItemsToReturn: 30,
   seenTtlDays: 7,
   minTitleLength: 12,
@@ -179,7 +179,7 @@ export const getNewsEmails = (opts?: {
 
     const maxMessagesToRead = Math.max(
       1,
-      Math.min(opts?.maxMessagesToRead ?? config.maxMessagesToRead, 30)
+      Math.min(opts?.maxMessagesToRead ?? config.maxMessagesToRead, 50)
     );
     const maxItemsToReturn = Math.max(
       1,
@@ -264,7 +264,7 @@ export const getNewsEmails = (opts?: {
 
         // ✅ score + timestamp 계산
         const enriched = filteredSeen.map((it) => {
-          const ts = toTimestamp(it.articlePublishedAt || it.publishedAt);
+          const ts = toTimestamp(it.gmailReceivedAt || it.publishedAt || it.articlePublishedAt);
           return {
             ...it,
             _ts: ts,
@@ -1067,11 +1067,7 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
 const ARTICLE_DATE_API_PATH = "/api/article-date";
 
 function shouldUseArticleDateApi() {
-  try {
-    const host = window.location.hostname || "";
-    if (host.includes("run.app")) return false;
-  } catch {}
-  return true;
+  return false;
 }
 
 async function fetchArticlePublishedAt(url: string): Promise<string> {
@@ -1475,9 +1471,9 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   const primarySequence: OutletBucket[] = [
     "global",
     "kr-progressive",
-    "kr-progressive",
     "kr-conservative",
-    "kr-conservative",
+    "kr-neutral",
+    "global",
   ];
 
   for (const bucket of primarySequence) {
@@ -1486,8 +1482,8 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   }
 
   const fillSequence: OutletBucket[] = [
-    "kr-neutral",
     "global",
+    "kr-neutral",
     "kr-progressive",
     "kr-conservative",
     "other",

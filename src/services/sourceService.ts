@@ -1026,13 +1026,23 @@ function buildQueryVariants(query: string) {
 
   const variants = new Set<string>([base]);
   const lower = base.toLowerCase();
+  const hasKorean = /[가-힣]/.test(base);
+  const outletSuffix = `Reuters OR Bloomberg OR BBC OR CNN OR FT OR WSJ OR CNBC OR AP`;
 
-  if (/테슬라/.test(base) || /tesla/.test(lower)) {
+  if (/테슬라/.test(base) || /\btesla\b/.test(lower)) {
     variants.add(`${base} OR Tesla OR "Tesla Inc" OR TSLA OR "Elon Musk"`);
-    variants.add(`Tesla OR "Tesla Inc" OR TSLA Reuters OR Bloomberg OR CNBC OR WSJ OR FT`);
-    variants.add(`Tesla EV Reuters Bloomberg BBC CNN WSJ FT`);
+    variants.add(`Tesla OR "Tesla Inc" OR TSLA OR "Elon Musk" ${outletSuffix}`);
+    variants.add(`Tesla EV Reuters Bloomberg BBC CNN WSJ FT CNBC AP`);
+  } else {
+    variants.add(`${base} ${outletSuffix}`);
+    if (hasKorean) {
+      variants.add(`${base} 해외 뉴스 ${outletSuffix}`);
+    } else {
+      variants.add(`${base} global news ${outletSuffix}`);
+    }
   }
 
+  variants.add(buildPreferredOutletQuery(base));
   return Array.from(variants).filter(Boolean);
 }
 
@@ -1063,19 +1073,19 @@ export async function fetchNewsSourcesSerper(
       q: primaryQuery,
       gl: "kr",
       hl: "ko",
-      num: 16,
+      num: 20,
     }),
     serperPost("news", apiKey, {
       q: globalQuery,
       gl: "us",
       hl: "en",
-      num: 16,
+      num: 20,
     }),
     serperPost("news", apiKey, {
       q: `${globalQuery} global`,
       gl: "us",
       hl: "en",
-      num: 16,
+      num: 20,
     }),
     serperPost("search", apiKey, {
       q: buildPreferredOutletQuery(primaryQuery),

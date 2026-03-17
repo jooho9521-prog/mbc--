@@ -111,7 +111,7 @@ function formatAssistantAnswer(text: string) {
   if (hasNumbering) {
     t = t.replace(/(\n|^)\s*(\d+)\.\s*/g, (_, p1, num) => `${p1}${num}. `);
     t = t.replace(/\n(\d+\.)/g, "\n\n$1").replace(/\n{3,}/g, "\n\n").trim();
-    return t;
+    return enforceFivePointAnswer(t);
   }
 
   const sentences = t
@@ -126,7 +126,57 @@ function formatAssistantAnswer(text: string) {
       .join("\n\n");
   }
 
-  return t;
+  return enforceFivePointAnswer(t);
+}
+
+
+function enforceFivePointAnswer(text: string) {
+  const normalized = cleanForRender(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (!normalized) return normalized;
+
+  const blockMatches = Array.from(
+    normalized.matchAll(/(?:^|\n)\s*(\d)\.\s*([\s\S]*?)(?=(?:\n\s*\d\.\s)|$)/g)
+  );
+
+  const blocks = blockMatches
+    .map((m) => `${m[1]}. ${String(m[2] || "").trim()}`)
+    .filter((v) => /\S/.test(v));
+
+  const sentences = normalized
+    .replace(/(?:^|\n)\s*\d\.\s*/g, " ")
+    .split(/(?<=[.!?])\s+|(?<=다\.)\s+|(?<=니다\.)\s+|(?<=요\.)\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const seeded = blocks.length ? blocks : sentences.map((s, i) => `${i + 1}. ${s}`);
+
+  const result: string[] = [];
+  for (const item of seeded) {
+    if (result.length >= 5) break;
+    const content = String(item).replace(/^\s*\d\.\s*/, "").trim();
+    if (content) result.push(content);
+  }
+
+  let cursor = 0;
+  while (result.length < 5 && cursor < sentences.length) {
+    const candidate = sentences[cursor++].trim();
+    if (!candidate) continue;
+    if (result.some((existing) => existing === candidate)) continue;
+    result.push(candidate);
+  }
+
+  while (result.length < 5) {
+    result.push("추가 확인이 필요한 부분까지 포함해 핵심 쟁점을 정리했습니다.");
+  }
+
+  return result
+    .slice(0, 5)
+    .map((content, index) => `${index + 1}. ${content}`)
+    .join("\n\n");
 }
 
 function buildAnalysisContext(analysis: TrendAnalysis | null, keyword?: string) {
