@@ -438,18 +438,9 @@ export function parseDateToTimestamp(input?: string): number | undefined {
   return undefined;
 }
 
-function getCurrentSeoulDateYmd() {
-  const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-  const yyyy = kst.getUTCFullYear();
-  const mm = String(kst.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(kst.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 function normalizeDateForDisplay(input?: string): { date?: string; ts?: number } {
   const raw = (input || "").trim();
-  if (!raw) return { date: getCurrentSeoulDateYmd() };
+  if (!raw) return {};
   const ts = parseDateToTimestamp(raw);
   if (ts) {
     try {
@@ -462,7 +453,7 @@ function normalizeDateForDisplay(input?: string): { date?: string; ts?: number }
       return { date: raw, ts };
     }
   }
-  return { date: raw || getCurrentSeoulDateYmd() };
+  return { date: raw };
 }
 
 /** -----------------------------
@@ -625,96 +616,16 @@ function diversifyRankedNewsSources(
   items: RankedNewsSourceItem[],
   limit = 10
 ) {
-  const list = Array.isArray(items) ? [...items] : [];
-  if (!list.length) return list;
-
-  const byBucket: Record<PerspectiveBucket, RankedNewsSourceItem[]> = {
-    "kr-progressive": [],
-    "kr-conservative": [],
-    "kr-neutral": [],
-    "global-neutral": [],
-    "global-progressive": [],
-    "global-conservative": [],
-    general: [],
-  };
-
-  for (const item of list) {
-    const host = getHostFromUrl(String(item.url || ""));
-    const bucket = getPerspectiveBucket(host);
-    byBucket[bucket].push(item);
-  }
-
-  const selected: RankedNewsSourceItem[] = [];
-  const selectedKeys = new Set<string>();
   const hostCounts = new Map<string, number>();
   const bucketCounts = new Map<PerspectiveBucket, number>();
+  const regionCounts = new Map<"kr" | "global", number>();
 
-  const getKey = (item: RankedNewsSourceItem) => normalizeNewsUrl(String(item.url || item.title || ""));
+  const selected: RankedNewsSourceItem[] = [];
+  const remaining = [...items];
 
-  const canCommit = (item: RankedNewsSourceItem, allowRepeatHost = false) => {
-    const host = getHostFromUrl(String(item.url || ""));
-    const key = getKey(item);
-    if (!host || !key || selectedKeys.has(key)) return false;
-
-    const hostCap = getHostCap(host);
-    const used = hostCounts.get(host) || 0;
-    if (used >= hostCap) return false;
-    if (!allowRepeatHost && used >= 1) return false;
-    return true;
-  };
-
-  const commit = (item: RankedNewsSourceItem | null, allowRepeatHost = false) => {
-    if (!item || !canCommit(item, allowRepeatHost)) return false;
-    const host = getHostFromUrl(String(item.url || ""));
-    const bucket = getPerspectiveBucket(host);
-    const key = getKey(item);
-
-    selected.push(item);
-    selectedKeys.add(key);
-    hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
-    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
-    return true;
-  };
-
-  const pickFromBuckets = (buckets: PerspectiveBucket[], preferredOnly = false) => {
-    for (const bucket of buckets) {
-      const queue = byBucket[bucket] || [];
-      for (const item of queue) {
-        const host = getHostFromUrl(String(item.url || ""));
-        if (preferredOnly && !isPreferredMajorOutlet(host)) continue;
-        if (commit(item)) return true;
-      }
-    }
-    if (preferredOnly) return pickFromBuckets(buckets, false);
-    return false;
-  };
-
-  const globalBuckets: PerspectiveBucket[] = [
-    "global-neutral",
-    "global-progressive",
-    "global-conservative",
-  ];
-  const krBuckets: PerspectiveBucket[] = [
-    "kr-progressive",
-    "kr-conservative",
-    "kr-neutral",
-  ];
-
-  // 1차: 해외 1개, 국내 진보/보수/중립을 가능한 범위에서 먼저 확보
-  pickFromBuckets(globalBuckets, true);
-  pickFromBuckets(["kr-progressive"], true);
-  pickFromBuckets(["kr-conservative"], true);
-  pickFromBuckets(["kr-neutral"], true);
-
-  // 2차: limit가 충분하면 해외 1개를 더 확보해 국내 편중 방지
-  if (selected.length < limit) {
-    const globalCount = globalBuckets.reduce((sum, b) => sum + (bucketCounts.get(b) || 0), 0);
-    if (globalCount < 2) pickFromBuckets(globalBuckets, false);
-  }
-
-  const targetCaps: Record<PerspectiveBucket, number> = {
-    "kr-progressive": 2,
-    "kr-conservative": 2,
+  const BUCKET_TARGET: Record<PerspectiveBucket, number> = {
+    "kr-progressive": 1,
+    "kr-conservative": 1,
     "kr-neutral": 2,
     "global-neutral": 2,
     "global-progressive": 1,
@@ -722,43 +633,127 @@ function diversifyRankedNewsSources(
     general: 2,
   };
 
-  const fillOrder: PerspectiveBucket[] = [
-    "global-neutral",
-    "kr-progressive",
-    "kr-conservative",
-    "kr-neutral",
-    "global-progressive",
-    "global-conservative",
-    "general",
-  ];
+  const MIN_REGION_TARGET = {
+    kr: Math.min(4, limit),
+    global: Math.min(4, limit),
+  };
 
-  while (selected.length < limit) {
-    let added = false;
+  const getRegion = (host: string): "kr" | "global" | null => {
+    const meta = findMediaMeta(host);
+    return meta?.region || null;
+  };
 
-    // 현재 가장 덜 뽑힌 버킷부터 채움
-    const ordered = [...fillOrder].sort((a, b) => {
-      const aNeed = (targetCaps[a] || 0) - (bucketCounts.get(a) || 0);
-      const bNeed = (targetCaps[b] || 0) - (bucketCounts.get(b) || 0);
-      if (bNeed !== aNeed) return bNeed - aNeed;
-      return (bucketCounts.get(a) || 0) - (bucketCounts.get(b) || 0);
-    });
+  const canPick = (item: RankedNewsSourceItem, relaxed = false) => {
+    const host = getHostFromUrl(String(item.url || ""));
+    const bucket = getPerspectiveBucket(host);
+    const region = getRegion(host);
 
-    for (const bucket of ordered) {
-      if ((bucketCounts.get(bucket) || 0) >= (targetCaps[bucket] || 0)) continue;
-      if (pickFromBuckets([bucket], false)) {
-        added = true;
+    if (!host || !region) return false;
+
+    const hostCap = getHostCap(host);
+    const bucketCap = BUCKET_TARGET[bucket] ?? 2;
+
+    if ((hostCounts.get(host) || 0) >= hostCap) return false;
+    if (!relaxed && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
+
+    return true;
+  };
+
+  const register = (item: RankedNewsSourceItem) => {
+    const host = getHostFromUrl(String(item.url || ""));
+    const bucket = getPerspectiveBucket(host);
+    const region = getRegion(host);
+
+    hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
+    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
+    if (region) {
+      regionCounts.set(region, (regionCounts.get(region) || 0) + 1);
+    }
+  };
+
+  const pickOne = (
+    predicate: (item: RankedNewsSourceItem) => boolean,
+    relaxed = false
+  ) => {
+    const idx = remaining.findIndex((item) => predicate(item) && canPick(item, relaxed));
+    if (idx === -1) return false;
+
+    const [chosen] = remaining.splice(idx, 1);
+    register(chosen);
+    selected.push(chosen);
+    return true;
+  };
+
+  while ((regionCounts.get("global") || 0) < MIN_REGION_TARGET.global && selected.length < limit) {
+    if (
+      !pickOne((item) => {
+        const host = getHostFromUrl(String(item.url || ""));
+        return findMediaMeta(host)?.region === "global" && isPreferredMajorOutlet(host);
+      })
+    ) {
+      if (
+        !pickOne((item) => {
+          const host = getHostFromUrl(String(item.url || ""));
+          return findMediaMeta(host)?.region === "global";
+        }, true)
+      ) {
         break;
       }
     }
-
-    if (!added) break;
+  }
+    while ((regionCounts.get("kr") || 0) < MIN_REGION_TARGET.kr && selected.length < limit) {
+    if (
+      !pickOne((item) => {
+        const host = getHostFromUrl(String(item.url || ""));
+        return findMediaMeta(host)?.region === "kr" && isPreferredMajorOutlet(host);
+      })
+    ) {
+      if (
+        !pickOne((item) => {
+          const host = getHostFromUrl(String(item.url || ""));
+          return findMediaMeta(host)?.region === "kr";
+        }, true)
+      ) {
+        break;
+      }
+    }
   }
 
-  // 마지막 보완: 아직 자리가 남으면 전체에서 host cap 범위로 채움
-  if (selected.length < limit) {
-    for (const item of list) {
-      if (selected.length >= limit) break;
-      if (!commit(item)) commit(item, true);
+  for (const bucket of [
+    "kr-progressive",
+    "kr-conservative",
+    "kr-neutral",
+    "global-neutral",
+    "global-progressive",
+    "global-conservative",
+  ] as PerspectiveBucket[]) {
+    if (selected.length >= limit) break;
+
+    pickOne((item) => {
+      const host = getHostFromUrl(String(item.url || ""));
+      return getPerspectiveBucket(host) === bucket && isPreferredMajorOutlet(host);
+    });
+  }
+
+  for (const bucket of [
+    "kr-progressive",
+    "kr-conservative",
+    "kr-neutral",
+    "global-neutral",
+    "global-progressive",
+    "global-conservative",
+  ] as PerspectiveBucket[]) {
+    if (selected.length >= limit) break;
+
+    pickOne((item) => {
+      const host = getHostFromUrl(String(item.url || ""));
+      return getPerspectiveBucket(host) === bucket;
+    });
+  }
+
+  while (selected.length < limit && remaining.length) {
+    if (!pickOne(() => true)) {
+      if (!pickOne(() => true, true)) break;
     }
   }
 
@@ -993,20 +988,61 @@ function getSerperKey(): string {
 
 function mapSerperItem(raw: any, origin: SourceOrigin): RankedNewsSourceItem {
   const normUrl = normalizeNewsUrl(raw?.link || "");
-  const dateInfo = normalizeDateForDisplay(raw?.date || raw?.publishedAt || raw?.published_at || "");
   return {
     title: cleanInlineText(raw?.title || "제목 없음"),
     url: normUrl,
     source: cleanInlineText(raw?.source || ""),
     snippet: cleanInlineText(raw?.snippet || raw?.description || ""),
-    ...dateInfo,
-    date: dateInfo.date || getCurrentSeoulDateYmd(),
+    ...normalizeDateForDisplay(raw?.date || ""),
     _origin: origin,
   };
 }
 
 function buildPreferredOutletQuery(query: string) {
   return `${query} (site:hani.co.kr OR site:khan.co.kr OR site:donga.com OR site:chosun.com OR site:joongang.co.kr OR site:hankookilbo.com OR site:seoul.co.kr OR site:yonhapnews.co.kr OR site:yna.co.kr OR site:ytn.co.kr OR site:kbs.co.kr OR site:imbc.com OR site:mbc.co.kr OR site:sbs.co.kr OR site:newsis.com OR site:reuters.com OR site:apnews.com OR site:bloomberg.com OR site:bbc.com OR site:cnn.com OR site:nytimes.com OR site:theguardian.com OR site:wsj.com OR site:ft.com OR site:economist.com)`;
+}
+
+function getSeoulToday() {
+  try {
+    const formatter = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(new Date());
+  } catch {
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+}
+
+function buildQueryVariants(query: string) {
+  const base = cleanInlineText(query || "");
+  if (!base) return [] as string[];
+
+  const variants = new Set<string>([base]);
+  const lower = base.toLowerCase();
+
+  if (/테슬라/.test(base) || /tesla/.test(lower)) {
+    variants.add(`${base} OR Tesla OR "Tesla Inc" OR TSLA OR "Elon Musk"`);
+    variants.add(`Tesla OR "Tesla Inc" OR TSLA Reuters OR Bloomberg OR CNBC OR WSJ OR FT`);
+    variants.add(`Tesla EV Reuters Bloomberg BBC CNN WSJ FT`);
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function ensureDateFallback(item: RankedNewsSourceItem): RankedNewsSourceItem {
+  if (item.date && String(item.date).trim()) return item;
+  return {
+    ...item,
+    date: getSeoulToday(),
+    ts: item.ts || Date.now(),
+  };
 }
 
 export async function fetchNewsSourcesSerper(
@@ -1017,60 +1053,72 @@ export async function fetchNewsSourcesSerper(
   if (!apiKey) return [];
 
   const need = Math.max(minCount, 3);
+  const queryVariants = buildQueryVariants(query);
+  const primaryQuery = queryVariants[0] || cleanInlineText(query || "");
+  const globalQuery = queryVariants[1] || `${primaryQuery} global`;
+  const globalOutletQuery = queryVariants[2] || buildPreferredOutletQuery(primaryQuery);
 
-  const newsKR = await serperPost("news", apiKey, {
-    q: query,
-    gl: "kr",
-    hl: "ko",
-    num: 16,
-  });
-
-  const newsUS = await serperPost("news", apiKey, {
-    q: query,
-    gl: "us",
-    hl: "en",
-    num: 16,
-  });
-
-  const newsGlobal = await serperPost("news", apiKey, {
-    q: `${query} global`,
-    gl: "us",
-    hl: "en",
-    num: 16,
-  });
-
-  const preferredSearchData = await serperPost("search", apiKey, {
-    q: buildPreferredOutletQuery(query),
-    gl: "us",
-    hl: "en",
-    num: 20,
-  });
-
-  const searchData = await serperPost("search", apiKey, {
-    q: query,
-    gl: "kr",
-    hl: "ko",
-    num: 20,
-  });
+  const [newsKR, newsUS, newsGlobal, preferredSearchData, searchData, extraGlobalSearch] = await Promise.all([
+    serperPost("news", apiKey, {
+      q: primaryQuery,
+      gl: "kr",
+      hl: "ko",
+      num: 16,
+    }),
+    serperPost("news", apiKey, {
+      q: globalQuery,
+      gl: "us",
+      hl: "en",
+      num: 16,
+    }),
+    serperPost("news", apiKey, {
+      q: `${globalQuery} global`,
+      gl: "us",
+      hl: "en",
+      num: 16,
+    }),
+    serperPost("search", apiKey, {
+      q: buildPreferredOutletQuery(primaryQuery),
+      gl: "us",
+      hl: "en",
+      num: 20,
+    }),
+    serperPost("search", apiKey, {
+      q: primaryQuery,
+      gl: "kr",
+      hl: "ko",
+      num: 20,
+    }),
+    serperPost("search", apiKey, {
+      q: globalOutletQuery,
+      gl: "us",
+      hl: "en",
+      num: 20,
+    }),
+  ]);
 
   const fromKR: RankedNewsSourceItem[] = (newsKR?.news || []).map((n: any) =>
-    mapSerperItem(n, "news")
+    ensureDateFallback(mapSerperItem(n, "news"))
   );
 
   const fromUS: RankedNewsSourceItem[] = (newsUS?.news || []).map((n: any) =>
-    mapSerperItem(n, "news")
+    ensureDateFallback(mapSerperItem(n, "news"))
   );
 
   const fromGlobal: RankedNewsSourceItem[] = (newsGlobal?.news || []).map((n: any) =>
-    mapSerperItem(n, "news")
+    ensureDateFallback(mapSerperItem(n, "news"))
   );
 
   const fromPreferredSearch: RankedNewsSourceItem[] = (
     preferredSearchData?.organic || []
-  ).map((o: any) => mapSerperItem(o, "search"));
+  ).map((o: any) => ensureDateFallback(mapSerperItem(o, "search")));
 
   const fromSearch: RankedNewsSourceItem[] = (searchData?.organic || []).map((o: any) =>
-    mapSerperItem(o, "search")
+    ensureDateFallback(mapSerperItem(o, "search"))
+  );
+
+  const fromExtraGlobalSearch: RankedNewsSourceItem[] = (extraGlobalSearch?.organic || []).map((o: any) =>
+    ensureDateFallback(mapSerperItem(o, "search"))
   );
 
   const combined = [
@@ -1079,6 +1127,7 @@ export async function fetchNewsSourcesSerper(
     ...fromGlobal,
     ...fromPreferredSearch,
     ...fromSearch,
+    ...fromExtraGlobalSearch,
   ];
 
   const ranked = filterAndRankNewsSources(combined, 80);
@@ -1100,5 +1149,5 @@ export async function fetchNewsSourcesSerper(
     })
   ).slice(0, 10);
 
-  return softFallback.map(({ _score, _origin, ...rest }) => rest);
+  return softFallback.map(({ _score, _origin, ...rest }) => ensureDateFallback(rest as RankedNewsSourceItem));
 }

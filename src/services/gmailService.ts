@@ -330,11 +330,45 @@ async function listMessageIds(
     return messages.map((m: any) => m.id).filter(Boolean);
   }
 
-  const fetchLimit = Math.max(20, Math.min(maxMessagesToRead * Math.max(3, requestedDates.length * 4), 100));
+  const perDateLimit = Math.max(20, Math.min(maxMessagesToRead * 4, 100));
+  const collected = new Map<string, true>();
+
+  for (const date of requestedDates) {
+    const normalized = normalizeDateInput(date);
+    if (!normalized) continue;
+
+    const params: Record<string, any> = {
+      userId: "me",
+      q: buildSingleDayQuery(fallbackQuery, normalized),
+      maxResults: perDateLimit,
+    };
+
+    if (labelId) {
+      params.labelIds = [labelId];
+    }
+
+    try {
+      const res = await gapi.client.gmail.users.messages.list(params);
+      const messages = res?.result?.messages || [];
+      for (const m of messages) {
+        const id = String(m?.id || "").trim();
+        if (id) collected.set(id, true);
+      }
+    } catch {
+      // ignore per-date query failure and fall through to metadata filtering below
+    }
+  }
+
+  const ids = Array.from(collected.keys());
+  if (ids.length) {
+    return await filterMessageIdsByRequestedDates(gapi, ids, requestedDates, maxMessagesToRead);
+  }
+
+  const fallbackLimit = Math.max(20, Math.min(maxMessagesToRead * Math.max(3, requestedDates.length * 4), 100));
   const params: Record<string, any> = {
     userId: "me",
     q: fallbackQuery,
-    maxResults: fetchLimit,
+    maxResults: fallbackLimit,
   };
 
   if (labelId) {
@@ -343,8 +377,8 @@ async function listMessageIds(
 
   const res = await gapi.client.gmail.users.messages.list(params);
   const messages = res?.result?.messages || [];
-  const ids = messages.map((m: any) => m?.id).filter(Boolean);
-  return await filterMessageIdsByRequestedDates(gapi, ids, requestedDates, maxMessagesToRead);
+  const broadIds = messages.map((m: any) => m?.id).filter(Boolean);
+  return await filterMessageIdsByRequestedDates(gapi, broadIds, requestedDates, maxMessagesToRead);
 }
 
 /**
@@ -1025,33 +1059,9 @@ async function enrichArticlePublishedDates(items: GmailNewsItem[]) {
   const list = Array.isArray(items) ? items : [];
   if (!list.length) return list;
 
-  const cache = new Map<string, string>();
-
-  const enriched = await Promise.all(
-    list.map(async (item) => {
-      const url = String(item?.link || "").trim();
-      if (!url) return item;
-
-      if (cache.has(url)) {
-        const cached = cache.get(url) || "";
-        return cached ? { ...item, articlePublishedAt: cached } : item;
-      }
-
-      const extracted = await fetchArticlePublishedAt(url);
-      cache.set(url, extracted || "");
-
-      if (extracted) {
-        return {
-          ...item,
-          articlePublishedAt: extracted,
-        };
-      }
-
-      return item;
-    })
-  );
-
-  return enriched;
+  // Gmail 브리핑은 메일 수신 날짜 기준으로 동작하므로,
+  // 기사 날짜 API 실패가 전체 결과를 흔들지 않도록 여기서는 외부 API를 호출하지 않습니다.
+  return list;
 }
 
 const ARTICLE_DATE_API_PATH = "/api/article-date";
@@ -1419,7 +1429,6 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   const selected: GmailNewsItem[] = [];
   const selectedKeys = new Set<string>();
   const publisherCounts = new Map<string, number>();
-  const bucketCounts = new Map<OutletBucket, number>();
 
   const tryPickFromBucket = (bucket: OutletBucket) => {
     const queue = byBucket[bucket] || [];
@@ -1452,25 +1461,23 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
     if (!key || selectedKeys.has(key)) return false;
 
     const host = safeHostname(item.link) || item.source || "";
-    const { bucket, publisher } = classifyOutlet(host);
+    const { publisher } = classifyOutlet(host);
     const publisherCount = publisherCounts.get(publisher) || 0;
 
     if (publisherCount >= 2) return false;
 
     publisherCounts.set(publisher, publisherCount + 1);
     selectedKeys.add(key);
-    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
     selected.push(item);
     return true;
   };
 
-  // 1차: 해외/진보/보수/중립을 먼저 고르게 확보
   const primarySequence: OutletBucket[] = [
     "global",
     "kr-progressive",
+    "kr-progressive",
     "kr-conservative",
-    "kr-neutral",
-    "global",
+    "kr-conservative",
   ];
 
   for (const bucket of primarySequence) {
@@ -1478,39 +1485,21 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
     commit(tryPickFromBucket(bucket));
   }
 
-  const targetCaps: Record<OutletBucket, number> = {
-    global: 2,
-    "kr-progressive": 2,
-    "kr-conservative": 2,
-    "kr-neutral": 2,
-    other: 2,
-  };
-
-  const fillBuckets: OutletBucket[] = [
+  const fillSequence: OutletBucket[] = [
+    "kr-neutral",
     "global",
     "kr-progressive",
     "kr-conservative",
-    "kr-neutral",
     "other",
   ];
 
   while (selected.length < maxItems) {
     let added = false;
 
-    const ordered = [...fillBuckets].sort((a, b) => {
-      const aNeed = (targetCaps[a] || 0) - (bucketCounts.get(a) || 0);
-      const bNeed = (targetCaps[b] || 0) - (bucketCounts.get(b) || 0);
-      if (bNeed !== aNeed) return bNeed - aNeed;
-      return (bucketCounts.get(a) || 0) - (bucketCounts.get(b) || 0);
-    });
-
-    for (const bucket of ordered) {
-      if ((bucketCounts.get(bucket) || 0) >= (targetCaps[bucket] || 0)) continue;
+    for (const bucket of fillSequence) {
+      if (selected.length >= maxItems) break;
       const picked = tryPickFromBucket(bucket);
-      if (commit(picked)) {
-        added = true;
-        break;
-      }
+      if (commit(picked)) added = true;
     }
 
     if (!added) break;
@@ -1519,7 +1508,18 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   if (selected.length < maxItems) {
     for (const item of list) {
       if (selected.length >= maxItems) break;
-      commit(item);
+
+      const key = String(item.link || item.title || "").trim();
+      if (!key || selectedKeys.has(key)) continue;
+
+      const host = safeHostname(item.link) || item.source || "";
+      const { publisher } = classifyOutlet(host);
+      const publisherCount = publisherCounts.get(publisher) || 0;
+      if (publisherCount >= 2) continue;
+
+      publisherCounts.set(publisher, publisherCount + 1);
+      selectedKeys.add(key);
+      selected.push(item);
     }
   }
 
