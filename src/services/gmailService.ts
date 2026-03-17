@@ -1419,6 +1419,7 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   const selected: GmailNewsItem[] = [];
   const selectedKeys = new Set<string>();
   const publisherCounts = new Map<string, number>();
+  const bucketCounts = new Map<OutletBucket, number>();
 
   const tryPickFromBucket = (bucket: OutletBucket) => {
     const queue = byBucket[bucket] || [];
@@ -1451,23 +1452,25 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
     if (!key || selectedKeys.has(key)) return false;
 
     const host = safeHostname(item.link) || item.source || "";
-    const { publisher } = classifyOutlet(host);
+    const { bucket, publisher } = classifyOutlet(host);
     const publisherCount = publisherCounts.get(publisher) || 0;
 
     if (publisherCount >= 2) return false;
 
     publisherCounts.set(publisher, publisherCount + 1);
     selectedKeys.add(key);
+    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
     selected.push(item);
     return true;
   };
 
+  // 1차: 해외/진보/보수/중립을 먼저 고르게 확보
   const primarySequence: OutletBucket[] = [
     "global",
     "kr-progressive",
-    "kr-progressive",
     "kr-conservative",
-    "kr-conservative",
+    "kr-neutral",
+    "global",
   ];
 
   for (const bucket of primarySequence) {
@@ -1475,21 +1478,39 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
     commit(tryPickFromBucket(bucket));
   }
 
-  const fillSequence: OutletBucket[] = [
-    "kr-neutral",
+  const targetCaps: Record<OutletBucket, number> = {
+    global: 2,
+    "kr-progressive": 2,
+    "kr-conservative": 2,
+    "kr-neutral": 2,
+    other: 2,
+  };
+
+  const fillBuckets: OutletBucket[] = [
     "global",
     "kr-progressive",
     "kr-conservative",
+    "kr-neutral",
     "other",
   ];
 
   while (selected.length < maxItems) {
     let added = false;
 
-    for (const bucket of fillSequence) {
-      if (selected.length >= maxItems) break;
+    const ordered = [...fillBuckets].sort((a, b) => {
+      const aNeed = (targetCaps[a] || 0) - (bucketCounts.get(a) || 0);
+      const bNeed = (targetCaps[b] || 0) - (bucketCounts.get(b) || 0);
+      if (bNeed !== aNeed) return bNeed - aNeed;
+      return (bucketCounts.get(a) || 0) - (bucketCounts.get(b) || 0);
+    });
+
+    for (const bucket of ordered) {
+      if ((bucketCounts.get(bucket) || 0) >= (targetCaps[bucket] || 0)) continue;
       const picked = tryPickFromBucket(bucket);
-      if (commit(picked)) added = true;
+      if (commit(picked)) {
+        added = true;
+        break;
+      }
     }
 
     if (!added) break;
@@ -1498,18 +1519,7 @@ function rebalanceNewsItems(items: GmailNewsItem[], maxItems: number) {
   if (selected.length < maxItems) {
     for (const item of list) {
       if (selected.length >= maxItems) break;
-
-      const key = String(item.link || item.title || "").trim();
-      if (!key || selectedKeys.has(key)) continue;
-
-      const host = safeHostname(item.link) || item.source || "";
-      const { publisher } = classifyOutlet(host);
-      const publisherCount = publisherCounts.get(publisher) || 0;
-      if (publisherCount >= 2) continue;
-
-      publisherCounts.set(publisher, publisherCount + 1);
-      selectedKeys.add(key);
-      selected.push(item);
+      commit(item);
     }
   }
 

@@ -438,9 +438,18 @@ export function parseDateToTimestamp(input?: string): number | undefined {
   return undefined;
 }
 
+function getCurrentSeoulDateYmd() {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const yyyy = kst.getUTCFullYear();
+  const mm = String(kst.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(kst.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function normalizeDateForDisplay(input?: string): { date?: string; ts?: number } {
   const raw = (input || "").trim();
-  if (!raw) return {};
+  if (!raw) return { date: getCurrentSeoulDateYmd() };
   const ts = parseDateToTimestamp(raw);
   if (ts) {
     try {
@@ -453,7 +462,7 @@ function normalizeDateForDisplay(input?: string): { date?: string; ts?: number }
       return { date: raw, ts };
     }
   }
-  return { date: raw };
+  return { date: raw || getCurrentSeoulDateYmd() };
 }
 
 /** -----------------------------
@@ -616,16 +625,96 @@ function diversifyRankedNewsSources(
   items: RankedNewsSourceItem[],
   limit = 10
 ) {
-  const hostCounts = new Map<string, number>();
-  const bucketCounts = new Map<PerspectiveBucket, number>();
-  const regionCounts = new Map<"kr" | "global", number>();
+  const list = Array.isArray(items) ? [...items] : [];
+  if (!list.length) return list;
+
+  const byBucket: Record<PerspectiveBucket, RankedNewsSourceItem[]> = {
+    "kr-progressive": [],
+    "kr-conservative": [],
+    "kr-neutral": [],
+    "global-neutral": [],
+    "global-progressive": [],
+    "global-conservative": [],
+    general: [],
+  };
+
+  for (const item of list) {
+    const host = getHostFromUrl(String(item.url || ""));
+    const bucket = getPerspectiveBucket(host);
+    byBucket[bucket].push(item);
+  }
 
   const selected: RankedNewsSourceItem[] = [];
-  const remaining = [...items];
+  const selectedKeys = new Set<string>();
+  const hostCounts = new Map<string, number>();
+  const bucketCounts = new Map<PerspectiveBucket, number>();
 
-  const BUCKET_TARGET: Record<PerspectiveBucket, number> = {
-    "kr-progressive": 1,
-    "kr-conservative": 1,
+  const getKey = (item: RankedNewsSourceItem) => normalizeNewsUrl(String(item.url || item.title || ""));
+
+  const canCommit = (item: RankedNewsSourceItem, allowRepeatHost = false) => {
+    const host = getHostFromUrl(String(item.url || ""));
+    const key = getKey(item);
+    if (!host || !key || selectedKeys.has(key)) return false;
+
+    const hostCap = getHostCap(host);
+    const used = hostCounts.get(host) || 0;
+    if (used >= hostCap) return false;
+    if (!allowRepeatHost && used >= 1) return false;
+    return true;
+  };
+
+  const commit = (item: RankedNewsSourceItem | null, allowRepeatHost = false) => {
+    if (!item || !canCommit(item, allowRepeatHost)) return false;
+    const host = getHostFromUrl(String(item.url || ""));
+    const bucket = getPerspectiveBucket(host);
+    const key = getKey(item);
+
+    selected.push(item);
+    selectedKeys.add(key);
+    hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
+    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
+    return true;
+  };
+
+  const pickFromBuckets = (buckets: PerspectiveBucket[], preferredOnly = false) => {
+    for (const bucket of buckets) {
+      const queue = byBucket[bucket] || [];
+      for (const item of queue) {
+        const host = getHostFromUrl(String(item.url || ""));
+        if (preferredOnly && !isPreferredMajorOutlet(host)) continue;
+        if (commit(item)) return true;
+      }
+    }
+    if (preferredOnly) return pickFromBuckets(buckets, false);
+    return false;
+  };
+
+  const globalBuckets: PerspectiveBucket[] = [
+    "global-neutral",
+    "global-progressive",
+    "global-conservative",
+  ];
+  const krBuckets: PerspectiveBucket[] = [
+    "kr-progressive",
+    "kr-conservative",
+    "kr-neutral",
+  ];
+
+  // 1차: 해외 1개, 국내 진보/보수/중립을 가능한 범위에서 먼저 확보
+  pickFromBuckets(globalBuckets, true);
+  pickFromBuckets(["kr-progressive"], true);
+  pickFromBuckets(["kr-conservative"], true);
+  pickFromBuckets(["kr-neutral"], true);
+
+  // 2차: limit가 충분하면 해외 1개를 더 확보해 국내 편중 방지
+  if (selected.length < limit) {
+    const globalCount = globalBuckets.reduce((sum, b) => sum + (bucketCounts.get(b) || 0), 0);
+    if (globalCount < 2) pickFromBuckets(globalBuckets, false);
+  }
+
+  const targetCaps: Record<PerspectiveBucket, number> = {
+    "kr-progressive": 2,
+    "kr-conservative": 2,
     "kr-neutral": 2,
     "global-neutral": 2,
     "global-progressive": 1,
@@ -633,127 +722,43 @@ function diversifyRankedNewsSources(
     general: 2,
   };
 
-  const MIN_REGION_TARGET = {
-    kr: Math.min(4, limit),
-    global: Math.min(4, limit),
-  };
-
-  const getRegion = (host: string): "kr" | "global" | null => {
-    const meta = findMediaMeta(host);
-    return meta?.region || null;
-  };
-
-  const canPick = (item: RankedNewsSourceItem, relaxed = false) => {
-    const host = getHostFromUrl(String(item.url || ""));
-    const bucket = getPerspectiveBucket(host);
-    const region = getRegion(host);
-
-    if (!host || !region) return false;
-
-    const hostCap = getHostCap(host);
-    const bucketCap = BUCKET_TARGET[bucket] ?? 2;
-
-    if ((hostCounts.get(host) || 0) >= hostCap) return false;
-    if (!relaxed && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
-
-    return true;
-  };
-
-  const register = (item: RankedNewsSourceItem) => {
-    const host = getHostFromUrl(String(item.url || ""));
-    const bucket = getPerspectiveBucket(host);
-    const region = getRegion(host);
-
-    hostCounts.set(host, (hostCounts.get(host) || 0) + 1);
-    bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
-    if (region) {
-      regionCounts.set(region, (regionCounts.get(region) || 0) + 1);
-    }
-  };
-
-  const pickOne = (
-    predicate: (item: RankedNewsSourceItem) => boolean,
-    relaxed = false
-  ) => {
-    const idx = remaining.findIndex((item) => predicate(item) && canPick(item, relaxed));
-    if (idx === -1) return false;
-
-    const [chosen] = remaining.splice(idx, 1);
-    register(chosen);
-    selected.push(chosen);
-    return true;
-  };
-
-  while ((regionCounts.get("global") || 0) < MIN_REGION_TARGET.global && selected.length < limit) {
-    if (
-      !pickOne((item) => {
-        const host = getHostFromUrl(String(item.url || ""));
-        return findMediaMeta(host)?.region === "global" && isPreferredMajorOutlet(host);
-      })
-    ) {
-      if (
-        !pickOne((item) => {
-          const host = getHostFromUrl(String(item.url || ""));
-          return findMediaMeta(host)?.region === "global";
-        }, true)
-      ) {
-        break;
-      }
-    }
-  }
-    while ((regionCounts.get("kr") || 0) < MIN_REGION_TARGET.kr && selected.length < limit) {
-    if (
-      !pickOne((item) => {
-        const host = getHostFromUrl(String(item.url || ""));
-        return findMediaMeta(host)?.region === "kr" && isPreferredMajorOutlet(host);
-      })
-    ) {
-      if (
-        !pickOne((item) => {
-          const host = getHostFromUrl(String(item.url || ""));
-          return findMediaMeta(host)?.region === "kr";
-        }, true)
-      ) {
-        break;
-      }
-    }
-  }
-
-  for (const bucket of [
+  const fillOrder: PerspectiveBucket[] = [
+    "global-neutral",
     "kr-progressive",
     "kr-conservative",
     "kr-neutral",
-    "global-neutral",
     "global-progressive",
     "global-conservative",
-  ] as PerspectiveBucket[]) {
-    if (selected.length >= limit) break;
+    "general",
+  ];
 
-    pickOne((item) => {
-      const host = getHostFromUrl(String(item.url || ""));
-      return getPerspectiveBucket(host) === bucket && isPreferredMajorOutlet(host);
+  while (selected.length < limit) {
+    let added = false;
+
+    // 현재 가장 덜 뽑힌 버킷부터 채움
+    const ordered = [...fillOrder].sort((a, b) => {
+      const aNeed = (targetCaps[a] || 0) - (bucketCounts.get(a) || 0);
+      const bNeed = (targetCaps[b] || 0) - (bucketCounts.get(b) || 0);
+      if (bNeed !== aNeed) return bNeed - aNeed;
+      return (bucketCounts.get(a) || 0) - (bucketCounts.get(b) || 0);
     });
+
+    for (const bucket of ordered) {
+      if ((bucketCounts.get(bucket) || 0) >= (targetCaps[bucket] || 0)) continue;
+      if (pickFromBuckets([bucket], false)) {
+        added = true;
+        break;
+      }
+    }
+
+    if (!added) break;
   }
 
-  for (const bucket of [
-    "kr-progressive",
-    "kr-conservative",
-    "kr-neutral",
-    "global-neutral",
-    "global-progressive",
-    "global-conservative",
-  ] as PerspectiveBucket[]) {
-    if (selected.length >= limit) break;
-
-    pickOne((item) => {
-      const host = getHostFromUrl(String(item.url || ""));
-      return getPerspectiveBucket(host) === bucket;
-    });
-  }
-
-  while (selected.length < limit && remaining.length) {
-    if (!pickOne(() => true)) {
-      if (!pickOne(() => true, true)) break;
+  // 마지막 보완: 아직 자리가 남으면 전체에서 host cap 범위로 채움
+  if (selected.length < limit) {
+    for (const item of list) {
+      if (selected.length >= limit) break;
+      if (!commit(item)) commit(item, true);
     }
   }
 
@@ -988,12 +993,14 @@ function getSerperKey(): string {
 
 function mapSerperItem(raw: any, origin: SourceOrigin): RankedNewsSourceItem {
   const normUrl = normalizeNewsUrl(raw?.link || "");
+  const dateInfo = normalizeDateForDisplay(raw?.date || raw?.publishedAt || raw?.published_at || "");
   return {
     title: cleanInlineText(raw?.title || "제목 없음"),
     url: normUrl,
     source: cleanInlineText(raw?.source || ""),
     snippet: cleanInlineText(raw?.snippet || raw?.description || ""),
-    ...normalizeDateForDisplay(raw?.date || ""),
+    ...dateInfo,
+    date: dateInfo.date || getCurrentSeoulDateYmd(),
     _origin: origin,
   };
 }
