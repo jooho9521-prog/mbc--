@@ -262,8 +262,12 @@ export const getNewsEmails = (opts?: {
           ? filterSeen(deduped, config.seenTtlDays)
           : deduped;
 
+        const sourcePool = filteredSeen.length >= Math.min(maxItemsToReturn, 4)
+          ? filteredSeen
+          : deduped;
+
         // ✅ score + timestamp 계산
-        const enriched = filteredSeen.map((it) => {
+        const enriched = sourcePool.map((it) => {
           const ts = toTimestamp(it.articlePublishedAt || it.publishedAt);
           return {
             ...it,
@@ -279,7 +283,9 @@ export const getNewsEmails = (opts?: {
             ? rebalanceNewsItems(sorted, maxItemsToReturn)
             : sorted.slice(0, maxItemsToReturn);
 
-        const result = balanced.slice(0, maxItemsToReturn);
+        const result = (balanced.length >= Math.min(maxItemsToReturn, 4)
+          ? balanced
+          : sorted).slice(0, maxItemsToReturn);
 
         if (excludeSeen) markSeen(result, config.seenTtlDays);
 

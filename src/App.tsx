@@ -682,7 +682,7 @@ const App: React.FC = () => {
         if (useEvidenceMode) {
           let sources: any[] = [];
           try {
-            sources = await fetchNewsSourcesSerper(searchKeyword, 10);
+            sources = await fetchNewsSourcesSerper(searchKeyword, 6);
           } catch {
             sources = [];
           }
