@@ -646,15 +646,14 @@ function diversifyRankedNewsSources(
   const canPick = (item: RankedNewsSourceItem, relaxed = false) => {
     const host = getHostFromUrl(String(item.url || ""));
     const bucket = getPerspectiveBucket(host);
-    const region = getRegion(host);
 
-    if (!host || !region) return false;
+    if (!host) return false;
 
     const hostCap = getHostCap(host);
     const bucketCap = BUCKET_TARGET[bucket] ?? 2;
 
     if ((hostCounts.get(host) || 0) >= hostCap) return false;
-    if (!relaxed && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
+    if (!relaxed && bucket !== "general" && (bucketCounts.get(bucket) || 0) >= bucketCap) return false;
 
     return true;
   };
@@ -754,6 +753,22 @@ function diversifyRankedNewsSources(
   while (selected.length < limit && remaining.length) {
     if (!pickOne(() => true)) {
       if (!pickOne(() => true, true)) break;
+    }
+  }
+
+  if (selected.length < Math.min(limit, 6) && remaining.length) {
+    const supplemental = remaining
+      .filter((item) => {
+        const host = getHostFromUrl(String(item.url || ""));
+        if (!host) return false;
+        return (hostCounts.get(host) || 0) < Math.max(2, getHostCap(host));
+      })
+      .slice(0, limit - selected.length);
+
+    for (const item of supplemental) {
+      register(item);
+      selected.push(item);
+      if (selected.length >= limit) break;
     }
   }
 
@@ -1026,23 +1041,13 @@ function buildQueryVariants(query: string) {
 
   const variants = new Set<string>([base]);
   const lower = base.toLowerCase();
-  const hasKorean = /[가-힣]/.test(base);
-  const outletSuffix = `Reuters OR Bloomberg OR BBC OR CNN OR FT OR WSJ OR CNBC OR AP`;
 
   if (/테슬라/.test(base) || /\btesla\b/.test(lower)) {
     variants.add(`${base} OR Tesla OR "Tesla Inc" OR TSLA OR "Elon Musk"`);
-    variants.add(`Tesla OR "Tesla Inc" OR TSLA OR "Elon Musk" ${outletSuffix}`);
-    variants.add(`Tesla EV Reuters Bloomberg BBC CNN WSJ FT CNBC AP`);
-  } else {
-    variants.add(`${base} ${outletSuffix}`);
-    if (hasKorean) {
-      variants.add(`${base} 해외 뉴스 ${outletSuffix}`);
-    } else {
-      variants.add(`${base} global news ${outletSuffix}`);
-    }
+    variants.add(`Tesla OR "Tesla Inc" OR TSLA Reuters OR Bloomberg OR CNBC OR WSJ OR FT`);
+    variants.add(`Tesla EV Reuters Bloomberg BBC CNN WSJ FT`);
   }
 
-  variants.add(buildPreferredOutletQuery(base));
   return Array.from(variants).filter(Boolean);
 }
 
@@ -1073,19 +1078,19 @@ export async function fetchNewsSourcesSerper(
       q: primaryQuery,
       gl: "kr",
       hl: "ko",
-      num: 20,
+      num: 16,
     }),
     serperPost("news", apiKey, {
       q: globalQuery,
       gl: "us",
       hl: "en",
-      num: 20,
+      num: 16,
     }),
     serperPost("news", apiKey, {
       q: `${globalQuery} global`,
       gl: "us",
       hl: "en",
-      num: 20,
+      num: 16,
     }),
     serperPost("search", apiKey, {
       q: buildPreferredOutletQuery(primaryQuery),

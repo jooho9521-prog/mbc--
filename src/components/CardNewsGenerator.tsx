@@ -55,6 +55,38 @@ const FONT_OPTIONS = [
 
 const DEFAULT_FONT = "'Pretendard', sans-serif";
 
+const SAVED_CARDS_KEY = "saved_cards";
+const MAX_SAVED_CARDS = 12;
+
+function readSavedCards() {
+  try {
+    const raw = localStorage.getItem(SAVED_CARDS_KEY);
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeSaveCards(nextCards: any[]) {
+  const trimmed = (Array.isArray(nextCards) ? nextCards : []).slice(0, MAX_SAVED_CARDS);
+  try {
+    localStorage.setItem(SAVED_CARDS_KEY, JSON.stringify(trimmed));
+    return true;
+  } catch {
+    try {
+      const compact = trimmed.map((card) => ({
+        ...card,
+        summary: String(card?.summary || "").slice(0, 280),
+      }));
+      localStorage.setItem(SAVED_CARDS_KEY, JSON.stringify(compact.slice(0, 6)));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 // ✅ 컴포넌트 내부 "무적" 기본 썸네일(SVG data URL)
 const makeDefaultThumbnailDataUrl = (title: string) => {
   const safe = (title || "TREND").slice(0, 24).replace(/[<>&"]/g, "").trim() || "TREND";
